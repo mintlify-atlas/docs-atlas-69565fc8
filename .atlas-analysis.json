@@ -1,0 +1,93 @@
+{
+  "projectType": "framework",
+  "projectName": "Pixi Build Backends",
+  "projectDescription": "Backend implementations for building Pixi projects from source using multiple programming languages and build systems",
+  "theme": "aspen",
+  "primaryColor": "#14B8A6",
+  "lightColor": "#5EEAD4",
+  "darkColor": "#0F766E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/protocol",
+              "concepts/compilers",
+              "concepts/variants"
+            ]
+          },
+          {
+            "group": "Build Backends",
+            "pages": [
+              "backends/python",
+              "backends/rust",
+              "backends/cmake",
+              "backends/rattler-build",
+              "backends/mojo",
+              "backends/ros"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-backend",
+              "guides/debugging",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/project-model",
+              "api/protocol",
+              "api/traits"
+            ]
+          },
+          {
+            "group": "Backend API",
+            "pages": [
+              "api/intermediate-backend",
+              "api/generated-recipe"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multiple build backend implementations (Python, Rust, CMake, Mojo, ROS, Rattler-build)",
+    "JSON-RPC protocol for build backend communication",
+    "Automatic compiler detection and integration",
+    "PyPI-to-conda dependency mapping",
+    "Cross-platform build support (Linux, macOS, Windows)",
+    "Integration with rattler-build for conda package generation"
+  ],
+  "publicApiSurface": [
+    "pixi-build-python - Python project build backend",
+    "pixi-build-rust - Rust project build backend",
+    "pixi-build-cmake - CMake project build backend",
+    "pixi-build-rattler-build - Direct recipe.yaml build backend",
+    "pixi-build-mojo - Mojo project build backend",
+    "pixi-build-ros - ROS package build backend",
+    "ProjectModel - Core project model trait",
+    "IntermediateBackend - Base backend implementation trait",
+    "Protocol - JSON-RPC protocol definitions"
+  ]
+}
