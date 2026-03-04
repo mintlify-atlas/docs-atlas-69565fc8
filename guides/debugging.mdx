@@ -1,0 +1,400 @@
+---
+title: Debugging Build Backends
+description: Tools and techniques for debugging build backend issues
+---
+
+When developing or troubleshooting build backends, Pixi provides several debugging tools and output files to help you understand what's happening during the build process.
+
+## Debug File Locations
+
+Build backends automatically save debug information in your project's build directory. These files help you inspect the generated recipes, understand variant configurations, and debug JSON-RPC communication.
+
+### Debug Directory Structure
+
+When you run `pixi build`, debug files are saved to:
+
+```
+<your_project>/.pixi/build/work/<package-name>--<hash>/debug/
+├── recipe.yaml              # General recipe for all outputs
+├── variants.yaml            # All variant configurations
+├── project_model.json       # JSON representation of your pixi.toml
+├── *_params.json            # JSON-RPC request parameters
+├── *_response.json          # JSON-RPC response data
+└── recipe/
+    └── <variant_hash>/
+        ├── recipe.yaml      # Variant-specific recipe
+        └── variants.yaml    # This variant's configuration
+```
+
+<Info>
+The `<hash>` in the path is computed from your package name and source to ensure each package gets a unique build directory.
+</Info>
+
+### General Recipe Files
+
+At the root of the debug directory:
+
+**`recipe.yaml`**
+
+This is the complete rattler-build recipe that can build all package outputs. It includes:
+- All conditional dependencies with platform selectors
+- Complete variant matrices
+- All build configurations
+
+Use this to understand the overall structure of your generated recipe.
+
+**`variants.yaml`**
+
+Contains all variant configurations for the package, including:
+- Default variants from the backend
+- User-specified variants from `pixi.toml`
+- External variant files
+- Pin run-as-build configuration
+- Zip keys for variant combinations
+
+### Variant-Specific Recipe Files
+
+Each unique variant combination gets its own directory:
+
+```
+.pixi/build/work/<package>--<hash>/debug/recipe/<variant_hash>/
+```
+
+The `<variant_hash>` is computed from the variant values, ensuring deterministic paths.
+
+**`recipe.yaml`** (variant-specific)
+
+This recipe is fully resolved for a specific variant:
+- All selectors evaluated
+- Variant values substituted
+- Single platform target
+- Ready to pass directly to `rattler-build`
+
+**`variants.yaml`** (variant-specific)
+
+Shows the exact variant values used for this build:
+
+```yaml
+python: "3.11"
+c_compiler: gcc
+cxx_compiler: gxx
+```
+
+## Rebuilding Packages
+
+You can rebuild a package using the generated recipes without going through Pixi. This is useful for:
+
+- Debugging build failures
+- Testing recipe modifications
+- Understanding rattler-build behavior
+
+<Steps>
+
+### Locate the recipe directory
+
+Find the variant-specific recipe you want to rebuild:
+
+```bash
+cd .pixi/build/work/<package-name>--<hash>/debug/recipe/<variant_hash>/
+```
+
+<Tip>
+Use `ls .pixi/build/work/*/debug/recipe/*/` to see all available variant builds.
+</Tip>
+
+### Build with rattler-build
+
+Run `rattler-build` directly in the recipe directory:
+
+```bash
+cd .pixi/build/work/my-package--abc123/debug/recipe/def456/
+rattler-build build
+```
+
+Or point to the recipe from anywhere:
+
+```bash
+rattler-build build --recipe .pixi/build/work/my-package--abc123/debug/recipe/def456/
+```
+
+### Modify and test
+
+You can edit the `recipe.yaml` file to test changes:
+
+```bash
+# Edit the recipe
+$EDITOR recipe.yaml
+
+# Rebuild with your changes
+rattler-build build
+```
+
+<Warning>
+Changes to the debug recipe are temporary and will be overwritten the next time you run `pixi build`. To make permanent changes, modify your backend or project configuration.
+</Warning>
+
+</Steps>
+
+## JSON-RPC Debugging
+
+The build backend protocol uses JSON-RPC for communication between Pixi and the backend. All requests and responses are saved for debugging.
+
+### JSON Debug Files
+
+In the debug directory, you'll find:
+
+**`project_model.json`**
+
+The complete project model sent from Pixi to the backend. This includes:
+- Package metadata (name, version, description)
+- Dependencies for all platforms
+- Build system configuration
+- Target-specific settings
+
+Example:
+
+```json
+{
+  "name": "my-package",
+  "version": "0.1.0",
+  "dependencies": {
+    "build": ["cmake", "ninja"],
+    "host": ["python >=3.8"],
+    "run": ["numpy >=1.20"]
+  },
+  "targets": {
+    "linux-64": {
+      "dependencies": {
+        "build": ["gcc"]
+      }
+    }
+  }
+}
+```
+
+**Request files: `*_params.json`**
+
+Parameters sent with each JSON-RPC method call:
+
+- `conda_outputs_params.json` - Parameters for the `conda/outputs` call
+- `conda_build_v1_params.json` - Parameters for the `conda/build_v1` call
+
+Example `conda_build_v1_params.json`:
+
+```json
+{
+  "output": {
+    "name": "my-package",
+    "version": "0.1.0",
+    "build": "py311h123abc_0",
+    "subdir": "linux-64",
+    "variant": {
+      "python": "3.11"
+    }
+  },
+  "host_prefix": {
+    "prefix": "/path/to/host/env",
+    "platform": "linux-64"
+  },
+  "work_directory": "/path/to/work",
+  "editable": false
+}
+```
+
+**Response files: `*_response.json`**
+
+Data returned from each JSON-RPC method:
+
+- `conda_outputs_response.json` - All discovered outputs with metadata
+- `conda_build_v1_response.json` - Built package information
+
+Example `conda_outputs_response.json`:
+
+```json
+{
+  "outputs": [
+    {
+      "metadata": {
+        "name": "my-package",
+        "version": "0.1.0",
+        "build": "py311h123abc_0",
+        "build_number": 0,
+        "subdir": "linux-64",
+        "variant": {
+          "python": "3.11"
+        }
+      },
+      "run_dependencies": {
+        "depends": [
+          {"spec": "python >=3.11,<3.12"},
+          {"spec": "numpy >=1.20"}
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Using JSON Files for Debugging
+
+<Accordion title="Verify project model parsing">
+Check `project_model.json` to ensure your `pixi.toml` is being parsed correctly:
+
+```bash
+jq '.dependencies' .pixi/build/work/*/debug/project_model.json
+```
+
+Verify:
+- All dependencies are present
+- Platform-specific dependencies are correct
+- Build system configuration is accurate
+</Accordion>
+
+<Accordion title="Inspect variant generation">
+Compare request parameters with response data:
+
+```bash
+# See what variants were requested
+jq '.variant_configuration' .pixi/build/work/*/debug/conda_outputs_params.json
+
+# See what outputs were generated
+jq '.outputs[].metadata.variant' .pixi/build/work/*/debug/conda_outputs_response.json
+```
+</Accordion>
+
+<Accordion title="Debug dependency resolution">
+Check the dependencies in the response:
+
+```bash
+# View all run dependencies
+jq '.outputs[].run_dependencies.depends' .pixi/build/work/*/debug/conda_outputs_response.json
+
+# View build dependencies
+jq '.outputs[].build_dependencies.depends' .pixi/build/work/*/debug/conda_outputs_response.json
+```
+</Accordion>
+
+<Accordion title="Trace build failures">
+If a build fails, examine the build parameters:
+
+```bash
+# Check the build configuration
+jq '.' .pixi/build/work/*/debug/conda_build_v1_params.json
+
+# Verify the output specification
+jq '.output' .pixi/build/work/*/debug/conda_build_v1_params.json
+```
+</Accordion>
+
+## Backend Development Debugging
+
+When developing a build backend, you can access additional debugging capabilities.
+
+### Running the Backend Directly
+
+Test your backend without Pixi:
+
+```bash
+# Build your backend
+cargo build
+
+# Run with JSON-RPC over HTTP (easier to test)
+./target/debug/pixi-build-my-backend --http-server --port 3000
+```
+
+Then send JSON-RPC requests:
+
+```bash
+curl -X POST http://localhost:3000 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "pixi/negotiate_capabilities",
+    "params": {"capabilities": {}},
+    "id": 1
+  }'
+```
+
+### Logging and Tracing
+
+Enable detailed logging:
+
+```bash
+PIXI_LOG=debug pixi build
+```
+
+Or in your backend code:
+
+```rust
+use tracing::{debug, info, warn};
+
+info!("Generating recipe for platform: {}", host_platform);
+debug!("Variant configuration: {:?}", variants);
+```
+
+### Testing Recipe Generation
+
+Create unit tests for your generator:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_recipe_generation() {
+        let generator = MyGenerator::default();
+        let model = ProjectModel { /* ... */ };
+        let config = MyBackendConfig::default();
+        
+        let recipe = generator.generate_recipe(
+            &model,
+            &config,
+            PathBuf::from("/tmp/test"),
+            Platform::Linux64,
+            None,
+            &HashSet::new(),
+            vec![],
+            None,
+        ).await.unwrap();
+        
+        assert_eq!(recipe.recipe.package.name, "test-package");
+    }
+}
+```
+
+## Common Debugging Scenarios
+
+<Accordion title="Recipe not generating expected dependencies">
+1. Check `project_model.json` to verify dependencies are being passed correctly
+2. Look at the variant-specific `recipe.yaml` to see final resolved dependencies
+3. Review your `generate_recipe` implementation for platform-specific logic
+4. Ensure you're using `model.dependencies(Some(platform))` for platform-aware access
+</Accordion>
+
+<Accordion title="Build script not executing correctly">
+1. Examine the generated `recipe.yaml` to see the actual script content
+2. Check if platform selectors are being evaluated correctly
+3. Rebuild with `rattler-build build -vv` for verbose output
+4. Look at the build directory contents in `.pixi/build/work/*/work/`
+</Accordion>
+
+<Accordion title="Variants not working as expected">
+1. Check `variants.yaml` in the debug directory for all variant configurations
+2. Compare with variant-specific `variants.yaml` to see what was selected
+3. Review `conda_outputs_response.json` to see all generated variants
+4. Verify `default_variants()` in your backend returns expected values
+</Accordion>
+
+<Accordion title="JSON-RPC communication errors">
+1. Look for `*_params.json` files to verify requests are being made
+2. Check `*_response.json` for error messages in responses
+3. Enable debug logging: `PIXI_LOG=debug pixi build`
+4. Test backend directly with `--http-server` mode
+</Accordion>
+
+## Next Steps
+
+- Explore [common troubleshooting solutions](/guides/troubleshooting)
+- Learn about [creating a custom backend](/guides/creating-backend)
+- Understand [compiler integration](/concepts/compilers)

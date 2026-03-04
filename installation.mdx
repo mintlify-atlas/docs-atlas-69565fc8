@@ -1,0 +1,510 @@
+---
+title: Installation & Setup
+description: Learn how to install and configure Pixi Build Backends, including channel setup, version pinning, and platform-specific configuration.
+---
+
+# Installation & Setup
+
+This guide covers everything you need to know about installing and configuring Pixi Build Backends for your projects.
+
+## Prerequisites
+
+### Install Pixi
+
+Build backends require [Pixi](https://pixi.sh) version 0.30.0 or later. Install or update Pixi:
+
+<CodeGroup>
+
+```bash Linux & macOS
+curl -fsSL https://pixi.sh/install.sh | bash
+```
+
+```powershell Windows
+iwr -useb https://pixi.sh/install.ps1 | iex
+```
+
+</CodeGroup>
+
+Verify the installation:
+
+```bash
+pixi --version
+```
+
+## Enable Build Backends
+
+Build backends are currently a preview feature. Enable it in your `pixi.toml`:
+
+```toml
+[workspace]
+preview = ["pixi-build"]
+```
+
+<Warning>
+The build backend feature is under active development. Configuration options and behavior may change before stabilization.
+</Warning>
+
+## Channel Configuration
+
+Build backends are distributed through conda channels. Configure channels to access the backends:
+
+### Recommended Channel Setup
+
+For most users, use conda-forge for stable releases:
+
+```toml
+[workspace]
+channels = ["https://prefix.dev/conda-forge"]
+```
+
+### Latest Versions
+
+For the newest backend versions, add the `pixi-build-backends` channel:
+
+```toml
+[workspace]
+channels = [
+  "https://prefix.dev/pixi-build-backends",  # Latest versions first
+  "https://prefix.dev/conda-forge"  # Stable versions and dependencies
+]
+```
+
+<Note>
+The `pixi-build-backends` channel receives new releases first, before they're available on conda-forge. This typically means versions are available 1-2 weeks earlier.
+</Note>
+
+### Specialized Channels
+
+Some backends require additional channels:
+
+<CodeGroup>
+
+```toml ROS Backend
+[workspace]
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/robostack-jazzy",  # or robostack-humble, robostack-noetic
+  "https://prefix.dev/conda-forge"
+]
+```
+
+```toml Mojo Backend
+[workspace]
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://conda.modular.com/max-nightly",
+  "https://prefix.dev/modular-community",
+  "https://prefix.dev/conda-forge"
+]
+```
+
+</CodeGroup>
+
+## Backend Installation
+
+Backends are automatically installed when specified in your build configuration:
+
+```toml
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+channels = ["https://prefix.dev/conda-forge"]
+```
+
+The `backend` field tells Pixi to:
+1. Download the specified backend from the configured channels
+2. Install it in an isolated build environment
+3. Use it to build your package
+
+### Version Constraints
+
+Control which backend version to use:
+
+<CodeGroup>
+
+```toml Latest Version
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+```
+
+```toml Specific Version
+[package.build]
+backend = { name = "pixi-build-python", version = "0.5.0" }
+```
+
+```toml Version Range
+[package.build]
+backend = { name = "pixi-build-python", version = ">=0.5.0,<0.6.0" }
+```
+
+```toml Pinned Version
+[package.build]
+backend = { name = "pixi-build-python", version = "=0.5.0" }
+```
+
+</CodeGroup>
+
+<Tip>
+Use `"*"` during development for the latest features. Pin to a specific version for production builds to ensure reproducibility.
+</Tip>
+
+## Platform Configuration
+
+Specify which platforms your package should support:
+
+```toml
+[workspace]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+```
+
+### Available Platforms
+
+| Platform | Description |
+|----------|-------------|
+| `linux-64` | Linux x86_64 |
+| `linux-aarch64` | Linux ARM64 |
+| `osx-64` | macOS Intel |
+| `osx-arm64` | macOS Apple Silicon |
+| `win-64` | Windows x86_64 |
+
+### Platform-Specific Configuration
+
+Some backends require platform-specific settings:
+
+```toml
+[package.build.config]
+compilers = ["cxx"]  # Default for all platforms
+
+[package.build.target.linux-64.config]
+compilers = ["cxx", "cuda"]  # Add CUDA on Linux
+
+[package.build.target.win-64.config]
+env = { MSVC_VERSION = "2022" }  # Windows-specific environment
+```
+
+## Backend-Specific Setup
+
+Each backend may require specific dependencies or configuration:
+
+### Python Backend
+
+```toml
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+
+[package.host-dependencies]
+# Specify your Python build backend
+hatchling = "*"  # or setuptools, maturin, etc.
+
+[package.build-dependencies]
+python = ">=3.11"  # Optional: pin Python version
+```
+
+### Rust Backend
+
+```toml
+[package.build]
+backend = { name = "pixi-build-rust", version = "*" }
+
+[package.build-dependencies]
+rust = ">=1.70.0,<1.91"  # Optional: pin Rust version
+```
+
+### CMake Backend
+
+```toml
+[package.build]
+backend = { name = "pixi-build-cmake", version = "*" }
+
+[package.build.config]
+compilers = ["cxx"]  # or ["c", "cxx"] for C and C++
+
+[package.build-dependencies]
+cmake = ">=3.20"  # Optional: pin CMake version
+ninja = "*"  # Ninja is used by default
+```
+
+### Rattler-Build Backend
+
+```toml
+[package.build]
+backend = { name = "pixi-build-rattler-build", version = "*" }
+```
+
+Requires a `recipe.yaml` file in your project:
+
+```
+project/
+├── pixi.toml
+├── recipe.yaml  # or recipe/recipe.yaml
+└── src/
+```
+
+### Mojo Backend
+
+```toml
+[package.build]
+backend = { name = "pixi-build-mojo", version = "*" }
+
+[package.host-dependencies]
+mojo-compiler = "=25.5.0"
+
+[package.build-dependencies]
+mojo-compiler = "=25.5.0"
+
+[package.run-dependencies]
+mojo-compiler = "=25.5.0"
+```
+
+### ROS Backend
+
+```toml
+[package.build]
+backend = { name = "pixi-build-ros", version = "*" }
+
+[package.build.config]
+distro = "jazzy"  # or "humble", "noetic", etc.
+```
+
+Requires a `package.xml` file:
+
+```
+ros_package/
+├── pixi.toml
+├── package.xml  # ROS package manifest
+├── CMakeLists.txt
+└── src/
+```
+
+## Compiler Configuration
+
+Many backends integrate with conda-forge's compiler infrastructure:
+
+```toml
+[package.build.config]
+compilers = ["c", "cxx"]  # Enable C and C++ compilers
+```
+
+### Available Compilers
+
+- `c` - C compiler (gcc on Linux, clang on macOS, MSVC on Windows)
+- `cxx` - C++ compiler
+- `fortran` - Fortran compiler
+- `rust` - Rust compiler
+- `cuda` - NVIDIA CUDA compiler
+
+### Compiler Versions
+
+On Windows, backends default to Visual Studio 2022:
+
+```toml
+# Default on Windows (can be overridden)
+[workspace.build-variants]
+c_compiler = ["vs2022"]
+cxx_compiler = ["vs2022"]
+```
+
+Override if needed:
+
+```toml
+[workspace.build-variants]
+c_compiler = ["vs2019"]
+cxx_compiler = ["vs2019"]
+```
+
+<Note>
+For comprehensive compiler documentation, see the [Compilers Guide](/concepts/compilers).
+</Note>
+
+## Development Setup
+
+### Local Backend Development
+
+If you're developing a backend or want to use a local version:
+
+```bash
+# Clone the repository
+git clone https://github.com/prefix-dev/pixi-build-backends.git
+cd pixi-build-backends
+
+# Install a backend locally
+pixi run install-pixi-build-python  # or install-pixi-build-rust, etc.
+```
+
+This installs the backend to your global Pixi environment, overriding any channel versions.
+
+### Building Backends from Source
+
+Build all backends:
+
+```bash
+pixi run build
+```
+
+Build specific backend recipes:
+
+```bash
+pixi run build-recipe recipe/pixi-build-python
+```
+
+## Environment Variables
+
+Configure build behavior with environment variables:
+
+```toml
+[package.build.config]
+env = {
+  SETUPTOOLS_SCM_PRETEND_VERSION = "1.0.0",  # Override version detection
+  CMAKE_VERBOSE_MAKEFILE = "ON",  # Verbose CMake output
+  RUST_LOG = "debug"  # Rust logging level
+}
+```
+
+### Platform-Specific Variables
+
+```toml
+[package.build.config]
+env = { COMMON_VAR = "base" }
+
+[package.build.target.linux-64.config]
+env = { COMMON_VAR = "linux", LINUX_ONLY = "value" }
+# Result on linux-64: { COMMON_VAR = "linux", LINUX_ONLY = "value" }
+```
+
+## Workspace vs Package Configuration
+
+Build backends support both workspace-level and package-level configuration:
+
+### Workspace Configuration
+
+```toml
+[workspace]
+preview = ["pixi-build"]
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[workspace.build-variants]
+python = ["3.11", "3.12"]  # Build for multiple Python versions
+```
+
+### Package Configuration
+
+```toml
+[package]
+name = "my-package"
+version = "0.1.0"
+
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+channels = ["https://prefix.dev/conda-forge"]  # Can override workspace channels
+
+[package.build.config]
+noarch = true  # Package-specific configuration
+```
+
+## Verification
+
+Verify your installation:
+
+<Steps>
+
+<Step title="Check Pixi version">
+
+```bash
+pixi --version
+```
+
+Should be 0.30.0 or later.
+
+</Step>
+
+<Step title="Verify channel access">
+
+```bash
+pixi search pixi-build-python
+```
+
+Should list available versions.
+
+</Step>
+
+<Step title="Test a build">
+
+Create a minimal test project and run:
+
+```bash
+pixi build
+```
+
+Should complete without errors.
+
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+### Backend not found
+
+**Problem**: `Error: Package 'pixi-build-python' not found`
+
+**Solution**: Check your channel configuration:
+
+```toml
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge"
+]
+```
+
+### Channel connectivity issues
+
+**Problem**: Timeout or connection errors
+
+**Solution**: Verify network access to channels:
+
+```bash
+curl -I https://prefix.dev/conda-forge
+```
+
+### Platform not supported
+
+**Problem**: `Error: Platform 'xxx' is not supported`
+
+**Solution**: Check available platforms for the backend:
+
+```bash
+pixi search pixi-build-python --platform linux-64
+```
+
+### Compiler not found
+
+**Problem**: `Error: Compiler 'xxx' not available`
+
+**Solution**: Ensure conda-forge channel is configured:
+
+```toml
+[workspace]
+channels = ["https://prefix.dev/conda-forge"]
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first package with a step-by-step tutorial
+  </Card>
+  
+  <Card title="Python Backend" icon="python" href="/backends/python">
+    Configure Python package builds
+  </Card>
+  
+  <Card title="Rust Backend" icon="rust" href="/backends/rust">
+    Set up Rust project builds
+  </Card>
+  
+  <Card title="CMake Backend" icon="hammer" href="/backends/cmake">
+    Configure C/C++ builds with CMake
+  </Card>
+</CardGroup>

@@ -1,0 +1,397 @@
+---
+title: IntermediateBackend
+description: Reference implementation of the Protocol traits using recipe generation
+---
+
+The `IntermediateBackend` is a generic implementation of the protocol traits that works with any recipe generator. It handles the RPC protocol by converting project models to conda recipes and managing the build process.
+
+## Architecture
+
+The intermediate backend consists of two main components:
+
+1. **IntermediateBackendInstantiator** - Implements `ProtocolInstantiator` for setup
+2. **IntermediateBackend** - Implements `Protocol` for handling build requests
+
+## IntermediateBackendInstantiator
+
+Defined in: `src/intermediate_backend.rs:68`
+
+```rust
+pub struct IntermediateBackendInstantiator<T: GenerateRecipe> {
+    logging_output_handler: LoggingOutputHandler,
+    generator: Arc<T>,
+}
+```
+
+### Fields
+
+<ParamField path="logging_output_handler" type="LoggingOutputHandler">
+  Handler for logging output during build operations
+</ParamField>
+
+<ParamField path="generator" type="Arc<T>">
+  The recipe generator instance implementing `GenerateRecipe`
+</ParamField>
+
+### Constructor
+
+```rust
+pub fn new(
+    logging_output_handler: LoggingOutputHandler,
+    instance: Arc<T>,
+) -> Self
+```
+
+Creates a new instantiator with the specified logging handler and recipe generator.
+
+<ParamField path="logging_output_handler" type="LoggingOutputHandler">
+  Handler for capturing build logs
+</ParamField>
+
+<ParamField path="instance" type="Arc<T>">
+  Shared reference to the recipe generator
+</ParamField>
+
+---
+
+## IntermediateBackend
+
+Defined in: `src/intermediate_backend.rs:83`
+
+```rust
+pub struct IntermediateBackend<T: GenerateRecipe> {
+    pub(crate) logging_output_handler: LoggingOutputHandler,
+    pub(crate) source_dir: PathBuf,
+    pub(crate) manifest_rel_path: PathBuf,
+    pub(crate) project_model: ProjectModel,
+    pub(crate) generate_recipe: Arc<T>,
+    pub(crate) config: T::Config,
+    pub(crate) target_config: OrderMap<TargetSelector, T::Config>,
+    pub(crate) cache_dir: Option<PathBuf>,
+}
+```
+
+### Fields
+
+<ParamField path="source_dir" type="PathBuf">
+  Root directory of the source code
+</ParamField>
+
+<ParamField path="manifest_rel_path" type="PathBuf">
+  Path to the manifest file relative to `source_dir`
+</ParamField>
+
+<ParamField path="project_model" type="ProjectModel">
+  The parsed project model from the frontend
+</ParamField>
+
+<ParamField path="generate_recipe" type="Arc<T>">
+  The recipe generator implementation
+</ParamField>
+
+<ParamField path="config" type="T::Config">
+  Backend-specific configuration
+</ParamField>
+
+<ParamField path="target_config" type="OrderMap<TargetSelector, T::Config>">
+  Per-target configuration overrides
+</ParamField>
+
+<ParamField path="cache_dir" type="Option<PathBuf>">
+  Optional cache directory for build artifacts and HTTP responses
+</ParamField>
+
+### Constructor
+
+```rust
+pub fn new(
+    manifest_path: PathBuf,
+    source_dir: Option<PathBuf>,
+    project_model: ProjectModel,
+    generate_recipe: Arc<T>,
+    config: serde_json::Value,
+    target_config: OrderMap<TargetSelector, serde_json::Value>,
+    logging_output_handler: LoggingOutputHandler,
+    cache_dir: Option<PathBuf>,
+) -> miette::Result<Self>
+```
+
+Creates a new backend instance.
+
+<ParamField path="manifest_path" type="PathBuf">
+  Absolute path to the project manifest file
+</ParamField>
+
+<ParamField path="source_dir" type="Option<PathBuf>">
+  Optional source directory. If `None`, uses the manifest's parent directory
+</ParamField>
+
+<ParamField path="project_model" type="ProjectModel">
+  The project model containing targets and dependencies
+</ParamField>
+
+<ParamField path="generate_recipe" type="Arc<T>">
+  Recipe generator implementation
+</ParamField>
+
+<ParamField path="config" type="serde_json::Value">
+  Backend configuration as JSON (deserialized to `T::Config`)
+</ParamField>
+
+<ParamField path="target_config" type="OrderMap<TargetSelector, serde_json::Value>">
+  Per-target configuration overrides as JSON
+</ParamField>
+
+<ParamField path="logging_output_handler" type="LoggingOutputHandler">
+  Handler for build logs
+</ParamField>
+
+<ParamField path="cache_dir" type="Option<PathBuf>">
+  Optional cache directory
+</ParamField>
+
+---
+
+## Protocol Implementation
+
+### `conda_outputs()`
+
+Defined in: `src/intermediate_backend.rs:224`
+
+Implements output discovery by:
+
+1. Merging target-specific configuration for the host platform
+2. Constructing variant configuration from defaults, files, and user input
+3. Generating the intermediate recipe using `GenerateRecipe::generate_recipe()`
+4. Converting the recipe to YAML source code
+5. Expanding all variant combinations using `rattler-build`
+6. Filtering skipped outputs
+7. Converting each output to the protocol format
+8. Writing debug artifacts (recipe.yaml, variants.yaml) to work directory
+
+<Expandable title="Debug Output Structure">
+The backend writes debug information to `{work_directory}/debug/`:
+```
+debug/
+  recipe.yaml              # Generated intermediate recipe
+  variants.yaml            # Full variant configuration
+  recipe/
+    {hash}/
+      recipe.yaml          # Recipe for this specific variant
+      variants.yaml        # Variant values for this output
+```
+</Expandable>
+
+**Key Steps:**
+
+```rust
+// 1. Generate recipe
+let generated_recipe = self.generate_recipe.generate_recipe(
+    &self.project_model,
+    &config,
+    self.source_dir.clone(),
+    host_platform,
+    Some(PythonParams { editable: false }),
+    &variants.keys().cloned().collect(),
+    channels,
+    self.cache_dir.clone(),
+).await?;
+
+// 2. Discover variants
+let discovered_outputs = variant_config.find_variants(
+    &outputs,
+    named_source,
+    &selector_config,
+)?;
+
+// 3. Convert to protocol format
+for discovered_output in discovered_outputs {
+    let recipe = Recipe::from_node(&discovered_output.node, selector_config)?;
+    outputs.push(CondaOutput { /* ... */ });
+}
+```
+
+---
+
+### `conda_build_v1()`
+
+Defined in: `src/intermediate_backend.rs:545`
+
+Implements the build process by:
+
+1. Determining build and host platforms from prefixes
+2. Merging target-specific configuration
+3. Constructing variant configuration from build parameters
+4. Generating the recipe with editable flag consideration
+5. Finding the matching output using `find_matching_output()`
+6. Setting up build directories with `conda_build_v1_directories()`
+7. Writing debug artifacts
+8. Configuring `rattler-build` tool settings
+9. Running the build with `run_build()`
+10. Extracting input globs from the build and recipe
+
+<Expandable title="Build Directory Structure">
+The backend creates a structured work directory:
+```
+{work_directory}/
+  work/        # Source code and build artifacts
+  host/        # Host environment (if not provided)
+  build/       # Build environment (if not provided)
+  cache/       # Cache directory (if not provided)
+  output/      # Built packages (if not specified)
+  debug/       # Debug artifacts
+```
+</Expandable>
+
+**Configuration Options:**
+
+```rust
+let tool_config = Configuration::builder()
+    .with_opt_cache_dir(self.cache_dir.clone())
+    .with_logging_output_handler(self.logging_output_handler.clone())
+    .with_testing(false)
+    .with_keep_build(true)  // Pixi is incremental
+    .with_environments_externally_managed(true)
+    .with_allow_absolute_license_paths(true)
+    .finish();
+```
+
+---
+
+## Helper Functions
+
+### `find_matching_output()`
+
+Defined in: `src/intermediate_backend.rs:771`
+
+```rust
+pub fn find_matching_output(
+    expected_output: &CondaBuildV1Output,
+    discovered_outputs: IndexSet<DiscoveredOutput>,
+) -> miette::Result<DiscoveredOutput>
+```
+
+Finds the output that matches the build request by:
+
+1. Filtering by name and non-skipped outputs
+2. Attempting exact variant key match
+3. Falling back to version/build/subdir match
+
+<ParamField path="expected_output" type="&CondaBuildV1Output">
+  The requested output specification (name, version, build, variant)
+</ParamField>
+
+<ParamField path="discovered_outputs" type="IndexSet<DiscoveredOutput>">
+  All discovered outputs from recipe expansion
+</ParamField>
+
+<ResponseField name="return" type="miette::Result<DiscoveredOutput>">
+  The matching output, or an error if no match is found
+</ResponseField>
+
+---
+
+### `conda_build_v1_directories()`
+
+Defined in: `src/intermediate_backend.rs:842`
+
+```rust
+pub fn conda_build_v1_directories(
+    host_prefix: Option<&Path>,
+    build_prefix: Option<&Path>,
+    work_directory: PathBuf,
+    cache_dir: Option<&Path>,
+    output_dir: Option<&Path>,
+    recipe_path: PathBuf,
+) -> Directories
+```
+
+Constructs the directory structure for the build, using provided paths or creating defaults under `work_directory`.
+
+---
+
+### `default_capabilities()`
+
+Defined in: `src/intermediate_backend.rs:874`
+
+```rust
+fn default_capabilities() -> BackendCapabilities
+```
+
+Returns the capabilities supported by `IntermediateBackend`:
+
+```rust
+BackendCapabilities {
+    provides_conda_outputs: Some(true),
+    provides_conda_build_v1: Some(true),
+}
+```
+
+---
+
+## Configuration
+
+### IntermediateBackendConfig
+
+Defined in: `src/intermediate_backend.rs:58`
+
+```rust
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct IntermediateBackendConfig {
+    pub env: IndexMap<String, String>,
+    pub debug_dir: Option<PathBuf>,
+}
+```
+
+<ParamField path="env" type="IndexMap<String, String>">
+  Environment variables to set during the build
+</ParamField>
+
+<ParamField path="debug_dir" type="Option<PathBuf>">
+  **Deprecated**: Debug directory (now writes to work directory instead)
+</ParamField>
+
+---
+
+## Usage Example
+
+Creating a custom backend:
+
+```rust
+use pixi_build_backend::{
+    IntermediateBackendInstantiator,
+    GenerateRecipe,
+    BackendConfig,
+};
+use std::sync::Arc;
+
+// Define your recipe generator
+struct MyRecipeGenerator;
+
+#[async_trait::async_trait]
+impl GenerateRecipe for MyRecipeGenerator {
+    type Config = MyBackendConfig;
+    
+    async fn generate_recipe(/* ... */) -> miette::Result<GeneratedRecipe> {
+        // Your recipe generation logic
+    }
+}
+
+// Create the instantiator
+let generator = Arc::new(MyRecipeGenerator);
+let logging_handler = LoggingOutputHandler::default();
+let instantiator = IntermediateBackendInstantiator::new(
+    logging_handler,
+    generator,
+);
+
+// Use with the protocol server
+// The instantiator handles initialize() calls from the frontend
+```
+
+## Related APIs
+
+- [Protocol](/api/protocol) - The traits implemented by this backend
+- [GenerateRecipe](/api/generated-recipe) - Recipe generation trait
+- [ProjectModel](/api/project-model) - Input project model

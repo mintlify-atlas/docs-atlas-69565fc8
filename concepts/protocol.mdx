@@ -1,0 +1,501 @@
+---
+title: JSON-RPC Protocol
+description: The JSON-RPC protocol used for communication between Pixi and build backends
+---
+
+Pixi communicates with build backends using a JSON-RPC 2.0 protocol. This standardized protocol enables language-agnostic communication and allows backends to be implemented as independent executables.
+
+## Transport Layer
+
+The protocol supports two transport mechanisms:
+
+### Standard I/O (Default)
+
+Backends receive requests on `stdin` and write responses to `stdout`. This is the default mode used by Pixi:
+
+```rust
+pub async fn run(self) -> miette::Result<()> {
+    let io = self.setup_io();
+    jsonrpc_stdio_server::ServerBuilder::new(io).build().await;
+    Ok(())
+}
+```
+
+### HTTP (Debug Mode)
+
+For development and debugging, backends can run as HTTP servers:
+
+```rust
+pub fn run_over_http(self, port: u16) -> miette::Result<()> {
+    let io = self.setup_io();
+    jsonrpc_http_server::ServerBuilder::new(io)
+        .start_http(&SocketAddr::from(([127, 0, 0, 1], port)))
+        .into_diagnostic()?
+        .wait();
+    Ok(())
+}
+```
+
+<Info>
+HTTP mode is useful for testing and debugging with tools like `curl` or Postman, but production deployments always use stdin/stdout for better performance and integration.
+</Info>
+
+## Protocol Methods
+
+The protocol defines four core RPC methods that backends must implement.
+
+### negotiate_capabilities
+
+**Method:** `negotiate_capabilities`
+
+**Purpose:** Allows the client and backend to agree on supported features before initialization.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "negotiate_capabilities",
+  "params": {
+    "capabilities": {
+      "provides_conda_outputs": true,
+      "provides_conda_build_v1": true
+    }
+  },
+  "id": 1
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "capabilities": {
+      "provides_conda_outputs": true,
+      "provides_conda_build_v1": true
+    }
+  },
+  "id": 1
+}
+```
+
+<Note>
+Capability negotiation happens before initialization and determines which protocol methods will be available for the session.
+</Note>
+
+### initialize
+
+**Method:** `initialize`
+
+**Purpose:** Initialize the backend with project information and configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "manifest_path": "/path/to/pixi.toml",
+    "source_directory": "/path/to/project",
+    "cache_directory": "/path/to/.pixi/cache",
+    "project_model": {
+      "package": {
+        "name": "my-package",
+        "version": "0.1.0"
+      },
+      "dependencies": {
+        "build": [],
+        "host": [],
+        "run": []
+      }
+    },
+    "configuration": {
+      "compilers": ["cxx"],
+      "cmake-args": ["-DBUILD_TESTS=OFF"]
+    },
+    "target_configuration": {
+      "linux-64": {
+        "compilers": ["cxx", "c"]
+      }
+    }
+  },
+  "id": 2
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {},
+  "id": 2
+}
+```
+
+The backend processes the initialization parameters and sets up its internal state. The response is typically empty, as the initialization success is implied by the lack of an error.
+
+### conda/outputs
+
+**Method:** `conda/outputs`
+
+**Purpose:** Discover all possible package outputs and their metadata based on the project and variant configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "conda/outputs",
+  "params": {
+    "host_platform": "linux-64",
+    "work_directory": "/path/to/.pixi/build/work/pkg--hash",
+    "channels": [
+      "https://conda.anaconda.org/conda-forge"
+    ],
+    "variant_configuration": {
+      "c_compiler": ["gcc"],
+      "c_compiler_version": ["11", "13"]
+    },
+    "variant_files": []
+  },
+  "id": 3
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "outputs": [
+      {
+        "metadata": {
+          "name": "my-package",
+          "version": "0.1.0",
+          "build": "h123abc_0",
+          "build_number": 0,
+          "subdir": "linux-64",
+          "license": "MIT",
+          "noarch": null,
+          "variant": {
+            "c_compiler": "gcc",
+            "c_compiler_version": "11"
+          }
+        },
+        "build_dependencies": {
+          "depends": [
+            {
+              "spec": "gcc_linux-64 11.*"
+            }
+          ],
+          "constraints": []
+        },
+        "host_dependencies": {
+          "depends": [],
+          "constraints": []
+        },
+        "run_dependencies": {
+          "depends": [
+            {
+              "spec": "libgcc-ng >=11.0"
+            }
+          ],
+          "constraints": []
+        },
+        "ignore_run_exports": {
+          "by_name": [],
+          "from_package": []
+        },
+        "run_exports": {
+          "weak": [],
+          "strong": [],
+          "noarch": [],
+          "weak_constrains": [],
+          "strong_constrains": []
+        }
+      },
+      {
+        "metadata": {
+          "name": "my-package",
+          "version": "0.1.0",
+          "build": "h456def_0",
+          "build_number": 0,
+          "subdir": "linux-64",
+          "variant": {
+            "c_compiler": "gcc",
+            "c_compiler_version": "13"
+          }
+        },
+        "build_dependencies": {
+          "depends": [
+            {
+              "spec": "gcc_linux-64 13.*"
+            }
+          ],
+          "constraints": []
+        },
+        "host_dependencies": {
+          "depends": [],
+          "constraints": []
+        },
+        "run_dependencies": {
+          "depends": [
+            {
+              "spec": "libgcc-ng >=13.0"
+            }
+          ],
+          "constraints": []
+        },
+        "ignore_run_exports": {
+          "by_name": [],
+          "from_package": []
+        },
+        "run_exports": {
+          "weak": [],
+          "strong": [],
+          "noarch": [],
+          "weak_constrains": [],
+          "strong_constrains": []
+        }
+      }
+    ],
+    "input_globs": [
+      "src/**/*.cpp",
+      "include/**/*.h",
+      "CMakeLists.txt"
+    ]
+  },
+  "id": 3
+}
+```
+
+This method returns all possible outputs based on variant combinations. In this example, two outputs are created for GCC versions 11 and 13.
+
+<Warning>
+The `conda/outputs` method must return metadata for ALL possible variant combinations. Pixi uses this information to resolve dependencies and determine which outputs to build.
+</Warning>
+
+### conda/build/v1
+
+**Method:** `conda/build/v1`
+
+**Purpose:** Build a specific package output.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "conda/build/v1",
+  "params": {
+    "output": {
+      "name": "my-package",
+      "version": "0.1.0",
+      "build": "h123abc_0",
+      "subdir": "linux-64",
+      "variant": {
+        "c_compiler": "gcc",
+        "c_compiler_version": "11"
+      }
+    },
+    "build_prefix": {
+      "prefix": "/path/to/.pixi/build/envs/build",
+      "platform": "linux-64"
+    },
+    "host_prefix": {
+      "prefix": "/path/to/.pixi/build/envs/host",
+      "platform": "linux-64"
+    },
+    "work_directory": "/path/to/.pixi/build/work/pkg--hash",
+    "output_directory": "/path/to/.pixi/build/output",
+    "channels": [
+      "https://conda.anaconda.org/conda-forge"
+    ],
+    "run_dependencies": [],
+    "run_constraints": [],
+    "run_exports": null,
+    "editable": false
+  },
+  "id": 4
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "output_file": "/path/to/.pixi/build/work/pkg--hash/output/linux-64/my-package-0.1.0-h123abc_0.conda",
+    "input_globs": [
+      "src/**/*.cpp",
+      "include/**/*.h",
+      "CMakeLists.txt"
+    ],
+    "name": "my-package",
+    "version": "0.1.0",
+    "build": "h123abc_0",
+    "subdir": "linux-64"
+  },
+  "id": 4
+}
+```
+
+The build method returns the path to the built conda package along with metadata about what was built.
+
+## Error Handling
+
+Errors are reported using JSON-RPC error responses with additional diagnostic information:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32000,
+    "message": "failed to parse configuration",
+    "data": {
+      "message": "failed to parse configuration",
+      "severity": "error",
+      "causes": [
+        {
+          "message": "unknown field `invalid-option`"
+        }
+      ],
+      "labels": [],
+      "related": []
+    }
+  },
+  "id": 2
+}
+```
+
+The error conversion happens in the server implementation:
+
+```rust
+fn convert_error(err: miette::Report) -> jsonrpc_core::Error {
+    let rendered = JSONReportHandler::new();
+    let mut json_str = String::new();
+    rendered
+        .render_report(&mut json_str, err.as_ref())
+        .expect("failed to convert error to json");
+    let data = serde_json::from_str(&json_str)
+        .expect("failed to parse json error");
+    jsonrpc_core::Error {
+        code: jsonrpc_core::ErrorCode::ServerError(-32000),
+        message: err.to_string(),
+        data: Some(data),
+    }
+}
+```
+
+<Info>
+Errors include diagnostic information from miette, providing rich context for debugging issues.
+</Info>
+
+## Request/Response Logging
+
+The protocol implementation automatically logs all requests and responses to the debug directory:
+
+```rust
+let debug_dir = params.work_directory.join(DEBUG_OUTPUT_DIR);
+
+// Log project model
+log_project_model(&debug_dir, project_model).await?;
+
+// Log request parameters
+log_conda_outputs(&debug_dir, &params).await?;
+
+// Execute the method
+match endpoint.conda_outputs(params).await {
+    Ok(result) => {
+        log_conda_outputs_response(&debug_dir, &result).await?;
+        Ok(to_value(result).expect("failed to convert to json"))
+    }
+    Err(err) => {
+        let json_error = convert_error(err);
+        log_conda_outputs_error(&debug_dir, &json_error).await?;
+        Err(json_error)
+    }
+}
+```
+
+This creates files in `.pixi/build/work/<package-name>--<hash>/debug/`:
+- `project_model.json` - The project model passed during initialization
+- `conda_outputs_params.json` - Parameters for the `conda/outputs` call
+- `conda_outputs_response.json` - Response from `conda/outputs`
+- `conda_build_v1_params.json` - Parameters for the build call
+- `conda_build_v1_response.json` - Response from the build
+- `*_error.json` - Error information if a method fails
+
+## Implementation Example
+
+Here's how the protocol methods are registered in the server:
+
+```rust
+let mut io = IoHandler::new();
+
+io.add_method(
+    procedures::negotiate_capabilities::METHOD_NAME,
+    move |params: Params| async move {
+        let params: NegotiateCapabilitiesParams = params.parse()?;
+        let result = T::negotiate_capabilities(params)
+            .await
+            .map_err(convert_error)?;
+        Ok(to_value(result).expect("failed to convert to json"))
+    },
+);
+
+io.add_method(
+    procedures::initialize::METHOD_NAME,
+    move |params: Params| async move {
+        let params: InitializeParams = params.parse()?;
+        let (protocol_endpoint, result) = initializer
+            .initialize(params)
+            .await
+            .map_err(convert_error)?;
+        Ok(to_value(result).expect("failed to convert to json"))
+    },
+);
+
+io.add_method(
+    procedures::conda_outputs::METHOD_NAME,
+    move |params: Params| async move {
+        let params: CondaOutputsParams = params.parse()?;
+        let result = endpoint.conda_outputs(params)
+            .await
+            .map_err(convert_error)?;
+        Ok(to_value(result).expect("failed to convert to json"))
+    },
+);
+
+io.add_method(
+    procedures::conda_build_v1::METHOD_NAME,
+    move |params: Params| async move {
+        let params: CondaBuildV1Params = params.parse()?;
+        let result = endpoint.conda_build_v1(params)
+            .await
+            .map_err(convert_error)?;
+        Ok(to_value(result).expect("failed to convert to json"))
+    },
+);
+```
+
+## Testing Backends
+
+You can test backend protocol implementation manually using HTTP mode:
+
+```bash
+# Start backend in HTTP mode
+my-backend --http-port 3000
+
+# Send a negotiate_capabilities request
+curl -X POST http://localhost:3000 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "negotiate_capabilities",
+    "params": {"capabilities": {}},
+    "id": 1
+  }'
+```
+
+<Note>
+When developing a new backend, use the HTTP mode for easier debugging and testing before integrating with Pixi.
+</Note>

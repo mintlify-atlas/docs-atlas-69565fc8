@@ -1,0 +1,714 @@
+---
+title: Troubleshooting
+description: Common issues and solutions when working with Pixi build backends
+---
+
+This guide covers common problems you may encounter when using or developing Pixi build backends, along with their solutions.
+
+## Build Failures
+
+<Accordion title="Error: No output defined for the package">
+**Symptom**: Build fails with:
+
+```
+error: there is no output defined for the package 'my-package'
+```
+
+**Cause**: The backend's `generate_recipe` method didn't create a package output, or the output was skipped due to a selector condition.
+
+**Solution**:
+
+1. Check if your package has a name and version defined:
+
+```toml title="pixi.toml"
+[package]
+name = "my-package"  # Required
+version = "0.1.0"    # Required
+```
+
+2. Look at the generated recipe in debug output:
+
+```bash
+cat .pixi/build/work/*/debug/recipe.yaml
+```
+
+3. Check for skip conditions in the recipe that might exclude your platform:
+
+```yaml
+build:
+  skip:
+    - win  # This would skip Windows builds
+```
+
+See `intermediate_backend.rs:780` for the error handling logic.
+</Accordion>
+
+<Accordion title="Error: Requested output not found in recipe">
+**Symptom**: Build fails with:
+
+```
+error: the requested output linux-64/my-package=0.1.0=py311h123_0 was not found in the recipe
+```
+
+**Cause**: The variant combination (version, build string, or platform) doesn't match any generated output.
+
+**Solution**:
+
+1. Check available outputs:
+
+```bash
+jq '.outputs[].metadata' .pixi/build/work/*/debug/conda_outputs_response.json
+```
+
+2. Verify your variant configuration matches the backend's defaults:
+
+```bash
+cat .pixi/build/work/*/debug/variants.yaml
+```
+
+3. If using custom variants, ensure they're compatible:
+
+```toml title="pixi.toml"
+[build-system.variant.python]
+values = ["3.11"]  # Must match available Python versions
+```
+
+See `intermediate_backend.rs:828` for variant matching logic.
+</Accordion>
+
+<Accordion title="Build script fails with 'command not found'">
+**Symptom**: Build fails during script execution:
+
+```
+/bin/sh: cmake: command not found
+```
+
+**Cause**: Required build tools are not in the build environment.
+
+**Solution**:
+
+1. Add missing tools to build dependencies:
+
+```toml title="pixi.toml"
+[build-dependencies]
+cmake = "*"
+ninja = "*"
+```
+
+2. Or configure the backend to auto-inject them:
+
+```toml title="pixi.toml"
+[tool.pixi-build-cmake]
+# CMake backend automatically adds cmake and ninja
+```
+
+3. Verify tools are in the generated recipe:
+
+```bash
+yq '.requirements.build' .pixi/build/work/*/debug/recipe.yaml
+```
+</Accordion>
+
+<Accordion title="Error: Manifest path has no parent directory">
+**Symptom**: Backend initialization fails:
+
+```
+error: Manifest path /pixi.toml is a file but has no parent directory
+```
+
+**Cause**: The manifest path is at the filesystem root or is malformed.
+
+**Solution**:
+
+Ensure your `pixi.toml` is in a regular directory:
+
+```bash
+# ✅ Good
+/home/user/project/pixi.toml
+
+# ❌ Bad
+/pixi.toml
+```
+
+This check happens in `intermediate_backend.rs:107`.
+</Accordion>
+
+## Platform-Specific Issues
+
+<Accordion title="Dependencies missing on specific platforms">
+**Symptom**: Build works on Linux but fails on macOS or Windows due to missing dependencies.
+
+**Cause**: Platform-specific dependencies not configured correctly.
+
+**Solution**:
+
+Use target selectors in your `pixi.toml`:
+
+```toml title="pixi.toml"
+[build-dependencies]
+cmake = "*"
+
+[target.linux-64.build-dependencies]
+gcc = "*"
+
+[target.osx-64.build-dependencies]
+clang = "*"
+
+[target.win-64.build-dependencies]
+vstools = "*"
+```
+
+Verify in the generated recipe:
+
+```bash
+yq '.requirements.build' .pixi/build/work/*/debug/recipe.yaml
+```
+
+You should see platform selectors:
+
+```yaml
+requirements:
+  build:
+    - cmake
+    - gcc  # [linux]
+    - clang  # [osx]
+```
+</Accordion>
+
+<Accordion title="Wrong compiler selected for platform">
+**Symptom**: Build fails with ABI incompatibility or wrong compiler:
+
+```
+error: incompatible compiler ABI
+```
+
+**Cause**: Compiler not matching the target platform's standard.
+
+**Solution**:
+
+1. Let the backend use conda-forge compiler infrastructure:
+
+```toml title="pixi.toml"
+[tool.pixi-build-cmake]
+compilers = ["c", "cxx"]  # Uses conda-forge compilers
+```
+
+2. Check which compilers are being used:
+
+```bash
+yq '.requirements.build' .pixi/build/work/*/debug/recipe.yaml | grep compiler
+```
+
+Expected output:
+```yaml
+- {{ compiler('c') }}
+- {{ compiler('cxx') }}
+```
+
+3. Review the [compilers documentation](/concepts/compilers) for platform-specific behavior.
+</Accordion>
+
+<Accordion title="Noarch build not working">
+**Symptom**: Package builds for specific platforms instead of being noarch.
+
+**Cause**: Backend doesn't set `noarch` type, or dependencies force platform-specific builds.
+
+**Solution**:
+
+1. For Python packages, ensure you're using `noarch: python`:
+
+```toml title="pixi.toml"
+[package]
+name = "my-python-lib"
+version = "0.1.0"
+
+[tool.pixi-build-python]
+# Python backend automatically detects noarch when appropriate
+```
+
+2. Check the generated recipe:
+
+```bash
+yq '.build.noarch' .pixi/build/work/*/debug/recipe.yaml
+```
+
+3. Verify no platform-specific dependencies exist:
+
+```bash
+yq '.requirements' .pixi/build/work/*/debug/recipe.yaml
+```
+
+Platform-specific compilers or libraries will prevent noarch builds.
+</Accordion>
+
+## Compiler Issues
+
+<Accordion title="Compiler not found during build">
+**Symptom**: Build fails with:
+
+```
+error: gcc: command not found
+```
+
+**Cause**: Compiler not added to build environment.
+
+**Solution**:
+
+1. Check if compiler is in the recipe:
+
+```bash
+yq '.requirements.build' .pixi/build/work/*/debug/recipe.yaml
+```
+
+2. Ensure backend configuration includes compilers:
+
+```toml title="pixi.toml"
+[tool.pixi-build-cmake]
+compilers = ["c", "cxx"]
+```
+
+3. Verify backend is using `add_compilers_to_requirements`:
+
+```rust
+// In your backend's generate_recipe method
+pixi_build_backend::compilers::add_compilers_to_requirements(
+    &compilers,
+    &mut requirements.build,
+    &model_dependencies,
+    &host_platform,
+);
+```
+
+See `pixi-build-cmake/src/main.rs:79` for reference.
+</Accordion>
+
+<Accordion title="C++ standard library not found">
+**Symptom**: Linking fails with undefined references to C++ stdlib:
+
+```
+error: undefined reference to `std::__cxx11::basic_string`
+```
+
+**Cause**: C++ standard library not added to requirements.
+
+**Solution**:
+
+Add stdlib to build requirements:
+
+```rust
+// In your backend
+pixi_build_backend::compilers::add_stdlib_to_requirements(
+    &compilers,
+    &mut requirements.build,
+    variants,
+);
+```
+
+This adds the appropriate `libstdcxx-ng` (Linux), `libcxx` (macOS), or VS runtime (Windows).
+
+See `pixi-build-rust/src/main.rs:97` for usage.
+</Accordion>
+
+<Accordion title="ABI compatibility errors">
+**Symptom**: Runtime errors about ABI incompatibility:
+
+```
+error: version `GLIBCXX_3.4.29' not found
+```
+
+**Cause**: Package built with different compiler than runtime environment.
+
+**Solution**:
+
+1. Use conda-forge compilers which ensure ABI compatibility:
+
+```yaml
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+```
+
+2. Don't override compiler versions unless necessary
+
+3. Ensure consistent variant configuration:
+
+```toml title="pixi.toml"
+[build-system.variant.cxx_compiler]
+values = ["gxx"]  # Use conda-forge default
+```
+
+4. Read the [compilers documentation](/concepts/compilers) for details on ABI compatibility.
+</Accordion>
+
+## Dependency Resolution
+
+<Accordion title="Dependency version conflicts">
+**Symptom**: Build fails with:
+
+```
+error: conflicting requirements: package 'A' requires 'B >=2.0', but 'B 1.5' is installed
+```
+
+**Cause**: Incompatible version specifications in dependencies.
+
+**Solution**:
+
+1. Check your dependency specifications:
+
+```toml title="pixi.toml"
+[dependencies]
+package-a = ">=1.0,<2.0"
+package-b = ">=2.0"  # Make sure these are compatible
+```
+
+2. Review the resolved dependencies:
+
+```bash
+jq '.outputs[].run_dependencies.depends' .pixi/build/work/*/debug/conda_outputs_response.json
+```
+
+3. Use constraints to pin versions:
+
+```toml title="pixi.toml"
+[build-system.constraints]
+package-b = "2.1.*"
+```
+</Accordion>
+
+<Accordion title="Circular dependency detected">
+**Symptom**: Build fails with circular dependency error.
+
+**Cause**: Package dependencies form a cycle.
+
+**Solution**:
+
+1. Review your dependency graph:
+
+```bash
+jq '.outputs[].run_dependencies.depends[].spec' .pixi/build/work/*/debug/conda_outputs_response.json
+```
+
+2. Break the cycle by:
+   - Making one dependency optional
+   - Splitting packages into smaller components
+   - Using run_constraints instead of run dependencies
+
+3. In your backend, use constraints for non-essential dependencies:
+
+```rust
+requirements.run_constraints.push(dependency);
+// Instead of:
+requirements.run.push(dependency);
+```
+</Accordion>
+
+<Accordion title="PyPI package not found in conda">
+**Symptom**: Python backend fails to find conda package for PyPI dependency.
+
+**Cause**: Not all PyPI packages are available on conda-forge, or mapping is incorrect.
+
+**Solution**:
+
+1. Check if the package exists on conda-forge:
+
+```bash
+rattler search <package-name> -c conda-forge
+```
+
+2. If missing, add it as a pip dependency in your pixi.toml:
+
+```toml title="pixi.toml"
+[dependencies]
+pip = "*"
+
+[pypi-dependencies]
+special-package = ">=1.0"
+```
+
+3. Or manually specify the conda name if it differs:
+
+```toml title="pixi.toml"
+[tool.pixi-build-python.pypi-mapping]
+"python-special" = "special-package"
+```
+
+See `pixi-build-python/src/pypi_mapping.rs` for the mapping logic.
+</Accordion>
+
+## Configuration Issues
+
+<Accordion title="Backend configuration not applied">
+**Symptom**: Backend settings in `pixi.toml` have no effect.
+
+**Cause**: Configuration parsing error or incorrect TOML key.
+
+**Solution**:
+
+1. Verify the configuration key matches your backend name:
+
+```toml title="pixi.toml"
+[build-system]
+build-backend = "pixi-build-cmake"
+
+[tool.pixi-build-cmake]  # Must match backend name
+compilers = ["c", "cxx"]
+```
+
+2. Check for TOML syntax errors:
+
+```bash
+pixi build --verbose
+```
+
+3. Review the project model JSON:
+
+```bash
+jq '.configuration' .pixi/build/work/*/debug/project_model.json
+```
+
+4. Ensure your config struct uses correct serde attributes:
+
+```rust
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]  // Converts to kebab-case
+pub struct MyBackendConfig {
+    pub build_flags: Option<Vec<String>>,  // build-flags in TOML
+}
+```
+</Accordion>
+
+<Accordion title="Target-specific configuration ignored">
+**Symptom**: Platform-specific backend configuration not working.
+
+**Cause**: Backend doesn't implement target config merging properly.
+
+**Solution**:
+
+1. Implement `merge_with_target_config` in your `BackendConfig`:
+
+```rust
+impl BackendConfig for MyBackendConfig {
+    fn merge_with_target_config(&self, target: &Self) -> miette::Result<Self> {
+        Ok(Self {
+            // Target config overrides base
+            compilers: target.compilers.clone()
+                .or_else(|| self.compilers.clone()),
+            flags: target.flags.clone()
+                .or_else(|| self.flags.clone()),
+        })
+    }
+}
+```
+
+2. Use target selectors in pixi.toml:
+
+```toml title="pixi.toml"
+[tool.pixi-build-cmake]
+compilers = ["c", "cxx"]
+
+[target.linux-64.tool.pixi-build-cmake]
+compilers = ["c", "cxx", "fortran"]  # Linux-specific
+```
+
+See `intermediate_backend.rs:230` for how target configs are resolved.
+</Accordion>
+
+<Accordion title="Variant configuration not working">
+**Symptom**: Custom variants not being used in builds.
+
+**Cause**: Variant configuration syntax error or priority issue.
+
+**Solution**:
+
+1. Check variant syntax:
+
+```toml title="pixi.toml"
+[build-system.variant]
+python = ["3.11", "3.12"]  # ❌ Wrong
+
+[build-system.variant.python]
+values = ["3.11", "3.12"]  # ✅ Correct
+```
+
+2. Review variant priority (highest to lowest):
+   - User-supplied variants (build-system.variant)
+   - External variant files
+   - Backend default_variants()
+
+3. Check final variant configuration:
+
+```bash
+cat .pixi/build/work/*/debug/variants.yaml
+```
+
+4. Use zip_keys to create specific combinations:
+
+```toml title="pixi.toml"
+[build-system.variant.python]
+values = ["3.11", "3.12"]
+
+[build-system.variant.numpy]
+values = ["1.23", "2.0"]
+
+[build-system.zip_keys]
+keys = [["python", "numpy"]]
+# Creates: python=3.11,numpy=1.23 and python=3.12,numpy=2.0
+# Instead of all 4 combinations
+```
+</Accordion>
+
+## Cache and State Issues
+
+<Accordion title="Stale cache causing build failures">
+**Symptom**: Build fails after updating dependencies or changing configuration.
+
+**Cause**: Cached data from previous builds not invalidated.
+
+**Solution**:
+
+1. Clean the build directory:
+
+```bash
+rm -rf .pixi/build
+pixi build
+```
+
+2. Or clean specific package cache:
+
+```bash
+rm -rf .pixi/build/work/<package-name>*
+```
+
+3. For development, use cache_dir parameter:
+
+```rust
+// In your backend
+let cache_dir = cache_dir.unwrap_or_else(|| work_dir.join("cache"));
+```
+</Accordion>
+
+<Accordion title="Permission errors in build directory">
+**Symptom**: Build fails with permission denied:
+
+```
+error: Permission denied: .pixi/build/work/
+```
+
+**Cause**: Build directory not writable or owned by another user.
+
+**Solution**:
+
+1. Check directory permissions:
+
+```bash
+ls -la .pixi/build/work/
+```
+
+2. Fix ownership:
+
+```bash
+sudo chown -R $USER:$USER .pixi/build
+```
+
+3. Ensure build directory is not on read-only filesystem
+</Accordion>
+
+## JSON-RPC Protocol Issues
+
+<Accordion title="Backend not responding to requests">
+**Symptom**: Build hangs or times out waiting for backend.
+
+**Cause**: Backend crashed, deadlocked, or not processing requests.
+
+**Solution**:
+
+1. Test backend directly:
+
+```bash
+pixi-build-my-backend --http-server --port 3000
+```
+
+2. Send manual test request:
+
+```bash
+curl -X POST http://localhost:3000 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"pixi/negotiate_capabilities","params":{},"id":1}'
+```
+
+3. Check for errors in backend logs:
+
+```bash
+PIXI_LOG=debug pixi build 2>&1 | grep -i error
+```
+
+4. Add timeout handling in your backend:
+
+```rust
+#[async_trait::async_trait]
+impl Protocol for MyBackend {
+    async fn conda_outputs(&self, params: CondaOutputsParams) 
+        -> miette::Result<CondaOutputsResult> 
+    {
+        // Use timeout for long operations
+        tokio::time::timeout(
+            Duration::from_secs(300),
+            self.generate_outputs(params)
+        ).await??
+    }
+}
+```
+</Accordion>
+
+<Accordion title="Invalid JSON-RPC response format">
+**Symptom**: Pixi fails to parse backend response.
+
+**Cause**: Backend returning malformed JSON or wrong response structure.
+
+**Solution**:
+
+1. Check response files:
+
+```bash
+jq '.' .pixi/build/work/*/debug/*_response.json
+```
+
+2. Validate against protocol types from `pixi-build-types`:
+
+```rust
+use pixi_build_types::procedures::conda_outputs::CondaOutputsResult;
+
+// Ensure your response matches the expected type
+let response = CondaOutputsResult {
+    outputs: vec![/* ... */],
+    input_globs: btree_set!["**/*.rs"],
+};
+```
+
+3. Use the Protocol trait implementation which handles serialization correctly
+</Accordion>
+
+## Getting Help
+
+If you're still experiencing issues:
+
+<Note>
+1. Collect debug information:
+   - Generated recipes from `.pixi/build/work/*/debug/`
+   - JSON-RPC files: `*_params.json` and `*_response.json`
+   - Full build output with `PIXI_LOG=debug pixi build`
+
+2. Check existing issues:
+   - [Pixi GitHub Issues](https://github.com/prefix-dev/pixi/issues)
+   - [Build Backends Issues](https://github.com/prefix-dev/pixi-build-backends/issues)
+
+3. Ask for help:
+   - [Discord Community](https://discord.gg/kKV8ZxyzY4)
+   - Create a new issue with debug information
+</Note>
+
+## Related Resources
+
+- [Debugging Guide](/guides/debugging) - Detailed debugging techniques
+- [Creating a Backend](/guides/creating-backend) - Backend development guide
+- [Compilers](/concepts/compilers) - Understanding compiler integration

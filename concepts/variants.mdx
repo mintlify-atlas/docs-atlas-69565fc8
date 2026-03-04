@@ -1,0 +1,474 @@
+---
+title: Build Variants
+description: Understanding the build variants system for creating multiple package configurations
+---
+
+Build variants enable you to create multiple configurations of a package from a single recipe. This is essential for supporting different compiler versions, Python versions, or other configuration options that affect package compatibility.
+
+## What Are Build Variants?
+
+A build variant is a set of key-value pairs that parameterize the build process. Each unique combination of variant values produces a separate package output with a different build string.
+
+For example, building a C++ library with two GCC versions creates two distinct packages:
+
+```
+my-library-1.0.0-gcc11_h123abc_0.conda
+my-library-1.0.0-gcc13_h456def_0.conda
+```
+
+These packages have different ABIs and cannot be used interchangeably, which is why they need separate build variants.
+
+## Variant Configuration
+
+Variants are configured using the `build-variants` section in your workspace configuration:
+
+```toml
+[workspace.build-variants]
+c_compiler = ["gcc", "clang"]
+c_compiler_version = ["11", "13"]
+python = ["3.10", "3.11", "3.12"]
+```
+
+This configuration creates a build matrix. If all variants are independent, this would produce 12 outputs (2 compilers × 2 versions × 3 Python versions).
+
+## How Variants Work
+
+The variant system is implemented in the `IntermediateBackend` and processes variants through several steps:
+
+### Variant Collection
+
+Variants are collected from multiple sources with increasing priority (`intermediate_backend.rs:248-265`):
+
+<Steps>
+
+### Backend defaults
+
+Backends can provide default variants through the `GenerateRecipe::default_variants` method:
+
+```rust
+fn default_variants(
+    &self,
+    _host_platform: Platform,
+) -> miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>> {
+    Ok(BTreeMap::new())
+}
+```
+
+### Variant files
+
+External YAML files can define variants:
+
+```yaml
+c_compiler:
+  - gcc
+  - clang
+c_compiler_version:
+  - "11"
+  - "13"
+```
+
+### User-provided variants
+
+Variants from the project's `pixi.toml` have the highest priority and override defaults.
+
+</Steps>
+
+### Variant Expansion
+
+The `VariantConfig::find_variants` method expands the recipe into all possible variant combinations (`intermediate_backend.rs:301-311`):
+
+```rust
+let outputs = find_outputs_from_src(named_source.clone())?;
+let discovered_outputs = variant_config.find_variants(
+    &outputs,
+    named_source.clone(),
+    &selector_config_for_variants,
+)?;
+```
+
+This produces a `DiscoveredOutput` for each variant combination, containing:
+- The variant values used (`used_vars`)
+- The build string that includes the variant hash
+- The complete recipe with variants applied
+- The target platform and noarch type
+
+### Hash Computation
+
+Each variant combination gets a unique hash that's included in the build string (`intermediate_backend.rs:331`):
+
+```rust
+let hash = HashInfo::from_variant(&variant, &discovered_output.noarch_type);
+```
+
+This hash ensures that packages built with different variants are distinguishable and won't conflict.
+
+## Variant Types
+
+### Compiler Variants
+
+The most common variants specify compiler information:
+
+```toml
+[workspace.build-variants]
+c_compiler = ["gcc"]
+c_compiler_version = ["11.4"]
+cxx_compiler = ["gxx"]
+cxx_compiler_version = ["11.4"]
+```
+
+These variants:
+- Determine which compiler packages are installed
+- Affect the ABI of the built package
+- Are included in the build string hash
+- Influence dependency resolution
+
+See the [Compiler Integration](./compilers) documentation for more details.
+
+### Language Version Variants
+
+For packages that depend on specific language runtime versions:
+
+```toml
+[workspace.build-variants]
+python = ["3.10", "3.11", "3.12"]
+```
+
+This creates separate packages for each Python version, ensuring compatibility.
+
+### Custom Variants
+
+You can define custom variants for any build parameter:
+
+```toml
+[workspace.build-variants]
+blas_impl = ["openblas", "mkl"]
+feature_x = ["enabled", "disabled"]
+```
+
+These variants can be referenced in your recipe using Jinja2 templates:
+
+```yaml
+requirements:
+  host:
+    - {{ blas_impl }}
+build:
+  string: {{ feature_x }}_{{ hash }}
+```
+
+## Platform-Specific Variants
+
+Variants can be configured per-platform using target selectors:
+
+```toml
+# Default for all platforms
+[workspace.build-variants]
+c_compiler = ["gcc"]
+
+# Windows-specific override
+[workspace.target.win.build-variants]
+c_compiler = ["vs2019", "vs2022"]
+
+# macOS-specific override
+[workspace.target.osx.build-variants]
+c_compiler = ["clang"]
+c_compiler_version = ["14", "15"]
+```
+
+The target-specific configuration is merged with the base configuration during variant processing.
+
+## Variant Zipping
+
+Sometimes you want variants to be combined in lockstep rather than creating a full cartesian product. This is called "zipping" variants:
+
+```yaml
+zip_keys:
+  - [c_compiler_version, cxx_compiler_version]
+
+c_compiler_version:
+  - "11"
+  - "13"
+cxx_compiler_version:
+  - "11"
+  - "13"
+```
+
+With zipping, this creates only 2 outputs:
+- `c_compiler_version=11, cxx_compiler_version=11`
+- `c_compiler_version=13, cxx_compiler_version=13`
+
+Without zipping, it would create 4 outputs (2 × 2).
+
+## Implementation Details
+
+### Variant Computation
+
+The `compute_variants` function orchestrates variant resolution (`common/variants.rs:12-31`):
+
+```rust
+pub fn compute_variants<P: ProjectModel>(
+    project_model: &P,
+    input_variant_configuration: Option<BTreeMap<NormalizedKey, Vec<Variable>>>,
+    host_platform: Platform,
+) -> miette::Result<Vec<BTreeMap<NormalizedKey, Variable>>> {
+    // Create a variant config from the variant configuration in the parameters.
+    let variant_config = VariantConfig {
+        variants: input_variant_configuration.unwrap_or_default(),
+        pin_run_as_build: None,
+        zip_keys: None,
+    };
+
+    // Determine the variant keys that are used in the recipe.
+    let used_variants = project_model.used_variants(Some(host_platform));
+
+    // Determine the combinations of the used variants.
+    variant_config
+        .combinations(&used_variants, None)
+        .into_diagnostic()
+}
+```
+
+This function:
+1. Constructs a `VariantConfig` from input parameters
+2. Determines which variant keys are actually used by the recipe
+3. Computes all valid combinations of those variants
+
+### Variant Validation
+
+The `can_be_used_as_variant` function determines if a package spec is suitable for use as a variant (`variants.rs:10-39`):
+
+```rust
+pub fn can_be_used_as_variant(spec: &pbt::PackageSpec) -> bool {
+    match spec {
+        pbt::PackageSpec::Binary(spec) => {
+            let pbt::BinaryPackageSpec {
+                version,
+                build,
+                build_number,
+                file_name,
+                channel,
+                subdir,
+                md5,
+                sha256,
+                url,
+                license,
+            } = spec;
+
+            version == &Some(VersionSpec::Any)
+                && build.is_none()
+                && build_number.is_none()
+                && file_name.is_none()
+                && channel.is_none()
+                && subdir.is_none()
+                && md5.is_none()
+                && sha256.is_none()
+                && url.is_none()
+                && license.is_none()
+        }
+        _ => false,
+    }
+}
+```
+
+A spec can be used as a variant if it allows any version and has no other constraints.
+
+### Variant Application
+
+When building a package, the selected variant is applied to the recipe (`intermediate_backend.rs:568-578`):
+
+```rust
+let variants: BTreeMap<_, _> = params
+    .output
+    .variant
+    .iter()
+    .map(|(k, v)| {
+        (
+            k.as_str().into(),
+            vec![convert_variant_from_pixi_build_types(v.clone())],
+        )
+    })
+    .collect();
+```
+
+The variant values are converted from the Pixi Build types to rattler-build types and used to configure the build.
+
+## Debugging Variants
+
+The build system saves variant information to the debug directory for inspection:
+
+```rust
+let variant_yaml = serde_yaml::to_string(&variant)
+    .into_diagnostic()
+    .context("failed to serialize variant to YAML")?;
+
+tokio_fs::write(&package_variant_path, variant_yaml)
+    .await
+    .into_diagnostic()?;
+```
+
+You can find variant configurations in:
+- `.pixi/build/work/<package>--<hash>/debug/variants.yaml` - All variant configurations
+- `.pixi/build/work/<package>--<hash>/debug/recipe/<variant_hash>/variants.yaml` - Specific variant used for that output
+
+## Examples
+
+### Single Variant
+
+Simplest case - one compiler, one version:
+
+```toml
+[workspace.build-variants]
+cxx_compiler = ["gxx"]
+cxx_compiler_version = ["13"]
+```
+
+Creates 1 output with GCC 13.
+
+### Compiler Matrix
+
+Multiple compiler versions:
+
+```toml
+[workspace.build-variants]
+cxx_compiler = ["gxx"]
+cxx_compiler_version = ["11", "12", "13"]
+```
+
+Creates 3 outputs, one for each GCC version.
+
+### Multi-Dimensional Matrix
+
+Multiple independent variant dimensions:
+
+```toml
+[workspace.build-variants]
+python = ["3.10", "3.11", "3.12"]
+numpy = ["1.26", "2.0"]
+```
+
+Creates 6 outputs (3 Python versions × 2 NumPy versions).
+
+### Conditional Variants
+
+Use selectors to apply variants conditionally:
+
+```toml
+[workspace.build-variants]
+c_compiler = ["gcc"]
+
+# Only create CUDA variants on Linux
+[workspace.target.linux-64.build-variants]
+cuda_compiler_version = ["11.8", "12.0"]
+```
+
+On Linux, this creates 2 outputs (2 CUDA versions). On other platforms, it creates 1 output (no CUDA variant).
+
+### Feature Flags
+
+Create variants based on feature combinations:
+
+```toml
+[workspace.build-variants]
+with_openmp = ["true", "false"]
+with_mpi = ["true", "false"]
+```
+
+Creates 4 outputs covering all feature combinations.
+
+## Best Practices
+
+<Steps>
+
+### Minimize variant dimensions
+
+Each variant dimension multiplies the number of outputs. Keep the variant matrix manageable:
+
+```toml
+# Good: 3 outputs
+[workspace.build-variants]
+python = ["3.10", "3.11", "3.12"]
+
+# Risky: 12 outputs
+[workspace.build-variants]
+python = ["3.10", "3.11", "3.12"]
+numpy = ["1.26", "2.0"]
+scipy = ["1.11", "1.12"]
+```
+
+### Use zip_keys for related variants
+
+When variants should change together, use zipping:
+
+```yaml
+zip_keys:
+  - [c_compiler_version, cxx_compiler_version]
+```
+
+### Match ecosystem conventions
+
+Follow conda-forge conventions for compiler and language variants to ensure compatibility with the broader ecosystem.
+
+### Test variant combinations
+
+Use `pixi build --dry-run` to see what outputs will be created before building:
+
+```bash
+pixi build --dry-run
+```
+
+### Document variant choices
+
+Add comments explaining why specific variants are needed:
+
+```toml
+[workspace.build-variants]
+# Support both CPU-only and CUDA builds
+cuda_compiler_version = ["None", "11.8"]
+```
+
+</Steps>
+
+<Warning>
+Building large variant matrices can be time-consuming and consume significant disk space. Each variant combination produces a complete package, so a 10-variant matrix creates 10 separate packages.
+</Warning>
+
+## Advanced Topics
+
+### Pin Run As Build
+
+The `pin_run_as_build` configuration controls how build-time dependencies are pinned as run-time dependencies:
+
+```yaml
+pin_run_as_build:
+  python:
+    min_pin: x.x
+    max_pin: x.x
+```
+
+This ensures that a package built with Python 3.11 requires Python `>=3.11,<3.12` at runtime.
+
+### Variant Filtering
+
+Recipes can use selectors to skip certain variant combinations:
+
+```yaml
+build:
+  skip: true  # [cuda_compiler_version == "None" and target_platform == "linux-64"]
+```
+
+This allows you to define a variant matrix but selectively disable certain combinations.
+
+### Variant-Dependent Dependencies
+
+Dependencies can reference variant values:
+
+```yaml
+requirements:
+  host:
+    - python {{ python }}
+    - numpy {{ numpy }}
+  run:
+    - python {{ python }}.*
+    - {{ pin_compatible('numpy', min_pin='x.x', max_pin='x') }}
+```
+
+The `{{ python }}` and `{{ numpy }}` templates are replaced with the actual variant values during recipe expansion.

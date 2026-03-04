@@ -1,0 +1,165 @@
+---
+title: ProjectModel Trait
+description: Core trait that defines the project model interface for accessing targets, dependencies, and metadata
+---
+
+The `ProjectModel` trait is the central interface for working with project models in Pixi Build Backends. Any backend that deals with projects (like those from pixi frontend) should implement this trait.
+
+## Trait Definition
+
+Defined in: `src/traits/project.rs:17`
+
+```rust
+pub trait ProjectModel {
+    type Targets: Targets;
+    
+    fn targets(&self) -> Option<&Self::Targets>;
+    fn dependencies(&self, platform: Option<Platform>) -> Dependencies<'_, Self::Targets::Spec>;
+    fn used_variants(&self, platform: Option<Platform>) -> HashSet<NormalizedKey>;
+    fn name(&self) -> Option<&String>;
+    fn version(&self) -> &Option<Version>;
+}
+```
+
+## Associated Types
+
+<ParamField path="Targets" type="Targets">
+  The targets type of the project model. Must implement the `Targets` trait.
+</ParamField>
+
+## Methods
+
+### `targets()`
+
+```rust
+fn targets(&self) -> Option<&Self::Targets>
+```
+
+Returns the targets of the project model, or `None` if no targets are defined.
+
+<ResponseField name="return" type="Option<&Self::Targets>">
+  An optional reference to the project's targets configuration
+</ResponseField>
+
+---
+
+### `dependencies()`
+
+```rust
+fn dependencies(
+    &self,
+    platform: Option<Platform>,
+) -> Dependencies<'_, Self::Targets::Spec>
+```
+
+Returns all dependencies (build, host, and run) for the project, optionally filtered by platform.
+
+<ParamField path="platform" type="Option<Platform>">
+  Optional platform to filter dependencies. If `None`, returns platform-independent dependencies.
+</ParamField>
+
+<ResponseField name="return" type="Dependencies<'_, Self::Targets::Spec>">
+  A `Dependencies` struct containing build, host, and run dependencies
+</ResponseField>
+
+**Default Implementation**: If targets are present, calls `targets.dependencies(platform)`, otherwise returns empty dependencies.
+
+---
+
+### `used_variants()`
+
+```rust
+fn used_variants(&self, platform: Option<Platform>) -> HashSet<NormalizedKey>
+```
+
+Returns the set of variant keys used by the project's dependencies. Variants are build configuration options that can affect package compatibility (e.g., Python version, compiler version).
+
+<ParamField path="platform" type="Option<Platform>">
+  Optional platform to determine which variants are used
+</ParamField>
+
+<ResponseField name="return" type="HashSet<NormalizedKey>">
+  A set of normalized variant keys extracted from all dependencies that can be used as variants
+</ResponseField>
+
+---
+
+### `name()`
+
+```rust
+fn name(&self) -> Option<&String>
+```
+
+Returns the name of the project.
+
+<ResponseField name="return" type="Option<&String>">
+  The project name, or `None` if not specified
+</ResponseField>
+
+---
+
+### `version()`
+
+```rust
+fn version(&self) -> &Option<Version>
+```
+
+Returns the version of the project.
+
+<ResponseField name="return" type="&Option<Version>">
+  A reference to the optional project version
+</ResponseField>
+
+## Implementation Example
+
+The `pixi_build_types::ProjectModel` struct implements this trait:
+
+```rust
+impl ProjectModel for pbt::ProjectModel {
+    type Targets = pbt::Targets;
+
+    fn targets(&self) -> Option<&Self::Targets> {
+        self.targets.as_ref()
+    }
+
+    fn name(&self) -> Option<&String> {
+        self.name.as_ref()
+    }
+
+    fn version(&self) -> &Option<Version> {
+        &self.version
+    }
+
+    fn used_variants(&self, platform: Option<Platform>) -> HashSet<NormalizedKey> {
+        // Collects variants from all build, host, and run dependencies
+        // that can be used as variant specifications
+    }
+}
+```
+
+## Usage
+
+The `ProjectModel` trait is typically used by backends to:
+
+1. **Access project metadata** - Get the project name and version for recipe generation
+2. **Query dependencies** - Retrieve platform-specific dependencies for builds
+3. **Determine variants** - Identify which variant configurations are needed
+4. **Navigate targets** - Access target-specific configurations
+
+## Helper Functions
+
+### `new_spec()`
+
+Defined in: `src/traits/project.rs:89`
+
+```rust
+pub fn new_spec<P: ProjectModel>() -> <<P as ProjectModel>::Targets as Targets>::Spec
+```
+
+Creates an empty package spec that matches any version. Useful for creating default dependency specifications.
+
+## Related APIs
+
+- [Targets](/api/traits#targets) - Target configuration trait
+- [Dependencies](/api/traits#dependencies) - Dependency container struct
+- [PackageSpec](/api/traits#packagespec) - Package specification trait

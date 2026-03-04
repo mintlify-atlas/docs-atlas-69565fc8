@@ -1,0 +1,326 @@
+---
+title: Core Traits
+description: Essential traits for package specifications, target selection, and dependency management
+---
+
+This module provides the foundational traits for working with package specifications, targets, and dependencies in Pixi Build Backends.
+
+## PackageSpec Trait
+
+Defined in: `src/traits/package_spec.rs:29`
+
+The `PackageSpec` trait defines the interface for package specifications, which describe how to obtain and match packages.
+
+```rust
+pub trait PackageSpec: Send {
+    type SourceSpec: PackageSourceSpec;
+    
+    fn can_be_used_as_variant(&self) -> bool;
+    fn to_match_spec(
+        &self,
+        name: PackageName,
+    ) -> miette::Result<(MatchSpec, Option<Self::SourceSpec>)>;
+}
+```
+
+### Associated Types
+
+<ParamField path="SourceSpec" type="PackageSourceSpec">
+  The source representation of a package (e.g., path spec, git spec)
+</ParamField>
+
+### Methods
+
+#### `can_be_used_as_variant()`
+
+```rust
+fn can_be_used_as_variant(&self) -> bool
+```
+
+Returns `true` if the package spec can be used as a variant specification. A spec can be used as a variant if it's a binary spec with:
+- Version set to `*` (any version)
+- No other constraints (build, build_number, channel, etc.)
+
+<ResponseField name="return" type="bool">
+  Whether this spec is suitable for use in variant configurations
+</ResponseField>
+
+---
+
+#### `to_match_spec()`
+
+```rust
+fn to_match_spec(
+    &self,
+    name: PackageName,
+) -> miette::Result<(MatchSpec, Option<Self::SourceSpec>)>
+```
+
+Converts the package spec to a conda `MatchSpec` for dependency resolution.
+
+<ParamField path="name" type="PackageName">
+  The package name to include in the match spec
+</ParamField>
+
+<ResponseField name="return" type="(MatchSpec, Option<SourceSpec>)">
+  A tuple containing:
+  1. The conda `MatchSpec` for matching packages
+  2. An optional `SourceSpec` if the package should be built from source
+</ResponseField>
+
+---
+
+## PackageSourceSpec Trait
+
+Defined in: `src/traits/package_spec.rs:44`
+
+Defines the interface for source package specifications (e.g., path-based, git-based).
+
+```rust
+pub trait PackageSourceSpec: Debug + Send {
+    fn to_v1(self) -> pbt::SourcePackageSpec;
+}
+```
+
+### Methods
+
+#### `to_v1()`
+
+Converts the source spec to the v1 protocol format.
+
+---
+
+## Helper Traits
+
+### AnyVersion
+
+Defined in: `src/traits/package_spec.rs:17`
+
+```rust
+pub trait AnyVersion {
+    fn any() -> Self;
+}
+```
+
+Provides a way to create wildcard version specifications that match any version.
+
+<Expandable title="Example Implementation">
+```rust
+impl AnyVersion for pbt::PackageSpec {
+    fn any() -> Self {
+        pbt::PackageSpec::Binary(VersionSpec::Any.into())
+    }
+}
+```
+</Expandable>
+
+---
+
+### BinarySpecExt
+
+Defined in: `src/traits/package_spec.rs:23`
+
+```rust
+pub trait BinarySpecExt {
+    fn to_nameless(&self) -> NamelessMatchSpec;
+}
+```
+
+Conversion trait for binary package specs to nameless match specs, preserving all constraints including build strings.
+
+---
+
+## Targets Trait
+
+Defined in: `src/traits/targets.rs:75`
+
+The `Targets` trait represents project target configurations, allowing platform-specific dependencies and settings.
+
+```rust
+pub trait Targets {
+    type Selector: TargetSelector;
+    type Target;
+    type Spec: PackageSpec;
+    
+    fn default_target(&self) -> Option<&Self::Target>;
+    fn empty_spec() -> Self::Spec;
+    fn targets(&self) -> impl Iterator<Item = (&Self::Selector, &Self::Target)>;
+    fn dependencies(&self, platform: Option<Platform>) -> Dependencies<'_, Self::Spec>;
+    fn run_dependencies(&self, platform: Option<Platform>) -> IndexMap<&SourcePackageName, &Self::Spec>;
+    fn host_dependencies(&self, platform: Option<Platform>) -> IndexMap<&SourcePackageName, &Self::Spec>;
+    fn build_dependencies(&self, platform: Option<Platform>) -> IndexMap<&SourcePackageName, &Self::Spec>;
+    fn resolve(&self, platform: Option<Platform>) -> impl Iterator<Item = &Self::Target>;
+}
+```
+
+### Associated Types
+
+<ParamField path="Selector" type="TargetSelector">
+  The selector type used to match platforms (e.g., `linux-64`, `unix`, `win`)
+</ParamField>
+
+<ParamField path="Target" type="any">
+  The target configuration type containing dependencies and settings
+</ParamField>
+
+<ParamField path="Spec" type="PackageSpec">
+  The package specification type used for dependencies
+</ParamField>
+
+### Key Methods
+
+#### `dependencies()`
+
+Returns all dependencies (build, host, run) for the given platform.
+
+<ParamField path="platform" type="Option<Platform>">
+  Optional platform filter. If `None`, returns only default target dependencies.
+</ParamField>
+
+<ResponseField name="return" type="Dependencies<'_, Self::Spec>">
+  A structured collection of build, host, and run dependencies
+</ResponseField>
+
+---
+
+#### `resolve()`
+
+Resolves which targets apply for a given platform, combining the default target with platform-specific targets.
+
+<ParamField path="platform" type="Option<Platform>">
+  The platform to resolve targets for
+</ParamField>
+
+<ResponseField name="return" type="impl Iterator<Item = &Self::Target>">
+  An iterator over matching targets (default + platform-specific)
+</ResponseField>
+
+---
+
+## TargetSelector Trait
+
+Defined in: `src/traits/targets.rs:17`
+
+Extends target selectors with platform matching functionality.
+
+```rust
+pub trait TargetSelector {
+    fn matches(&self, platform: Platform) -> bool;
+}
+```
+
+### Methods
+
+#### `matches()`
+
+Determines if a target selector matches a given platform.
+
+<ParamField path="platform" type="Platform">
+  The platform to test against
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  `true` if the selector matches the platform
+</ResponseField>
+
+<Expandable title="Selector Types">
+The implementation supports several selector types:
+- `Platform("linux-64")` - Exact platform match
+- `Linux` - Matches any Linux platform
+- `Unix` - Matches Linux and macOS
+- `Win` - Matches Windows platforms
+- `MacOs` - Matches macOS platforms
+</Expandable>
+
+---
+
+## Dependencies Struct
+
+Defined in: `src/traits/targets.rs:24`
+
+A container for all dependency types associated with a target.
+
+```rust
+pub struct Dependencies<'a, S> {
+    pub run: IndexMap<&'a SourcePackageName, &'a S>,
+    pub host: IndexMap<&'a SourcePackageName, &'a S>,
+    pub build: IndexMap<&'a SourcePackageName, &'a S>,
+}
+```
+
+### Fields
+
+<ParamField path="run" type="IndexMap<&SourcePackageName, &S>">
+  Runtime dependencies required when the package is used
+</ParamField>
+
+<ParamField path="host" type="IndexMap<&SourcePackageName, &S>">
+  Host dependencies needed during the build on the target platform
+</ParamField>
+
+<ParamField path="build" type="IndexMap<&SourcePackageName, &S>">
+  Build dependencies needed during the build on the build platform
+</ParamField>
+
+### Methods
+
+#### `contains()`
+
+```rust
+pub fn contains(&self, name: &SourcePackageName) -> bool
+```
+
+Checks if any dependency category contains the specified package.
+
+---
+
+#### `build_and_host_names()`
+
+```rust
+pub fn build_and_host_names(&self) -> impl Iterator<Item = &str>
+```
+
+Returns an iterator of unique package names from build and host dependencies. Useful for checking build tools and compilers.
+
+---
+
+## Usage Examples
+
+### Checking for Variant-Compatible Specs
+
+```rust
+use pixi_build_backend::PackageSpec;
+
+let spec = pbt::PackageSpec::Binary(VersionSpec::Any.into());
+if spec.can_be_used_as_variant() {
+    // This spec can be used in variant configurations
+}
+```
+
+### Resolving Platform Dependencies
+
+```rust
+use rattler_conda_types::Platform;
+
+let deps = targets.dependencies(Some(Platform::Linux64));
+for (name, spec) in deps.build {
+    println!("Build dependency: {}", name);
+}
+```
+
+### Matching Target Selectors
+
+```rust
+use pixi_build_types::TargetSelector;
+
+let selector = TargetSelector::Unix;
+if selector.matches(Platform::Linux64) {
+    // This target applies to Linux
+}
+```
+
+## Related APIs
+
+- [ProjectModel](/api/project-model) - Uses these traits for accessing dependencies
+- [IntermediateBackend](/api/intermediate-backend) - Implements backends using these traits
+- [GenerateRecipe](/api/generated-recipe) - Consumes dependencies from these traits

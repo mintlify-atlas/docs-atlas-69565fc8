@@ -1,0 +1,261 @@
+---
+title: System Architecture
+description: Understanding the Pixi Build Backend architecture and how backends interact with Pixi
+---
+
+Pixi Build Backends implement a modular architecture that decouples package building from the Pixi core. This design enables language-specific optimizations while maintaining a standardized interface.
+
+## Architecture Overview
+
+The build system follows a client-server architecture where Pixi acts as the client and build backends are independent executables that implement the backend protocol.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Pixi (Client)                        │
+│  - Manages dependencies                                     │
+│  - Resolves build variants                                  │
+│  - Coordinates build process                                │
+└───────────────────┬─────────────────────────────────────────┘
+                    │
+                    │ JSON-RPC Protocol
+                    │ (stdin/stdout or HTTP)
+                    │
+┌───────────────────┴─────────────────────────────────────────┐
+│                   Build Backend (Server)                    │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │         IntermediateBackend<T>                      │    │
+│  │  - Implements Protocol trait                        │    │
+│  │  - Manages backend lifecycle                        │    │
+│  └────────────┬───────────────────────────────────────┘    │
+│               │                                             │
+│               ▼                                             │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │         GenerateRecipe trait                        │    │
+│  │  - Converts ProjectModel to IntermediateRecipe     │    │
+│  │  - Language-specific implementation                 │    │
+│  └────────────┬───────────────────────────────────────┘    │
+│               │                                             │
+│               ▼                                             │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │         rattler-build                               │    │
+│  │  - Builds conda packages from recipes              │    │
+│  └────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+### IntermediateBackend
+
+The `IntermediateBackend<T>` is the central component that bridges Pixi and language-specific build logic. It's defined in `intermediate_backend.rs:83-169`:
+
+```rust
+pub struct IntermediateBackend<T: GenerateRecipe> {
+    pub(crate) logging_output_handler: LoggingOutputHandler,
+    pub(crate) source_dir: PathBuf,
+    pub(crate) manifest_rel_path: PathBuf,
+    pub(crate) project_model: ProjectModel,
+    pub(crate) generate_recipe: Arc<T>,
+    pub(crate) config: T::Config,
+    pub(crate) target_config: OrderMap<TargetSelector, T::Config>,
+    pub(crate) cache_dir: Option<PathBuf>,
+}
+```
+
+<Note>
+The `IntermediateBackend` is generic over `T: GenerateRecipe`, allowing each backend to provide its own recipe generation logic while sharing the common protocol implementation.
+</Note>
+
+### Protocol Traits
+
+Two key traits define the backend protocol:
+
+#### ProtocolInstantiator
+
+Handles backend initialization and capability negotiation (from `protocol.rs:10-24`):
+
+```rust
+pub trait ProtocolInstantiator: Send + Sync + 'static {
+    /// Called when negotiating capabilities with the client
+    async fn negotiate_capabilities(
+        params: NegotiateCapabilitiesParams,
+    ) -> miette::Result<NegotiateCapabilitiesResult>;
+
+    /// Called when the client requests initialization
+    async fn initialize(
+        &self,
+        params: InitializeParams,
+    ) -> miette::Result<(Box<dyn Protocol + Send + Sync + 'static>, InitializeResult)>;
+}
+```
+
+#### Protocol
+
+Defines the main RPC endpoints for building packages (from `protocol.rs:29-46`):
+
+```rust
+pub trait Protocol {
+    /// Called when the client requests outputs for a Conda package
+    async fn conda_outputs(
+        &self,
+        _params: CondaOutputsParams,
+    ) -> miette::Result<CondaOutputsResult>;
+
+    /// Called when the client calls `conda/build_v1`
+    async fn conda_build_v1(
+        &self,
+        _params: CondaBuildV1Params,
+    ) -> miette::Result<CondaBuildV1Result>;
+}
+```
+
+### GenerateRecipe Trait
+
+Backend implementations must implement the `GenerateRecipe` trait to convert a project model into a rattler-build recipe:
+
+```rust
+pub trait GenerateRecipe {
+    type Config: BackendConfig;
+
+    /// Generates an IntermediateRecipe from a ProjectModel
+    async fn generate_recipe(
+        &self,
+        model: &ProjectModel,
+        config: &Self::Config,
+        manifest_path: PathBuf,
+        host_platform: Platform,
+        python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
+        channels: Vec<ChannelUrl>,
+        cache_dir: Option<PathBuf>,
+    ) -> miette::Result<GeneratedRecipe>;
+
+    /// Returns default variants for the given host platform
+    fn default_variants(
+        &self,
+        _host_platform: Platform,
+    ) -> miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>>;
+}
+```
+
+## Build Flow
+
+The typical build process follows these steps:
+
+<Steps>
+
+### Capability Negotiation
+
+Pixi initiates a connection and negotiates capabilities with the backend to determine what features are supported.
+
+### Initialization
+
+Pixi sends an `initialize` request containing:
+- Project manifest path
+- Source directory
+- Project model (parsed `pixi.toml`)
+- Configuration and target-specific configuration
+- Cache directory
+
+The backend returns a `Protocol` implementation ready to handle build requests.
+
+### Discover Outputs
+
+Pixi calls `conda_outputs` to discover all possible package outputs and their variants. The backend:
+
+1. Merges target-specific configuration
+2. Constructs variant configuration from defaults and user-provided values
+3. Generates an intermediate recipe using the `GenerateRecipe` implementation
+4. Expands the recipe into all variant combinations
+5. Returns metadata for each output including dependencies and variant information
+
+### Build Package
+
+When building a specific output, Pixi calls `conda_build_v1` with:
+- The selected output specification
+- Build and host environment prefixes
+- Resolved dependencies
+- Work directory
+
+The backend:
+
+1. Generates the recipe for the specific variant
+2. Configures rattler-build with appropriate settings
+3. Executes the build
+4. Returns the path to the built package
+
+</Steps>
+
+## Directory Structure
+
+The build process creates a structured directory layout:
+
+```
+.pixi/build/work/<package-name>--<hash>/
+├── debug/
+│   ├── recipe.yaml              # General recipe for all outputs
+│   ├── variants.yaml            # All variant configurations
+│   ├── project_model.json       # Serialized project model
+│   ├── conda_outputs_params.json
+│   ├── conda_outputs_response.json
+│   ├── conda_build_v1_params.json
+│   ├── conda_build_v1_response.json
+│   └── recipe/
+│       └── <variant_hash>/      # Per-variant recipes
+│           ├── recipe.yaml      # Variant-specific recipe
+│           └── variants.yaml    # Variant configuration
+├── work/                        # Build working directory
+├── host/                        # Host environment (if managed)
+├── build/                       # Build environment (if managed)
+└── output/                      # Built packages
+```
+
+<Info>
+The `debug/` directory contains all the information needed to reproduce a build, including the exact recipe generated, variant configuration, and JSON-RPC request/response data.
+</Info>
+
+## Backend Capabilities
+
+Backends declare their capabilities during negotiation:
+
+```rust
+fn default_capabilities() -> BackendCapabilities {
+    BackendCapabilities {
+        provides_conda_outputs: Some(true),
+        provides_conda_build_v1: Some(true),
+    }
+}
+```
+
+This allows Pixi to understand what operations the backend supports and adapt its behavior accordingly.
+
+## Target Selection
+
+Backends can provide platform-specific configuration through the `target_config` field. During build, the appropriate configuration is selected based on the host platform:
+
+```rust
+let config = self
+    .target_config
+    .iter()
+    .find(|(selector, _)| selector.matches(host_platform))
+    .map(|(_, target_config)| self.config.merge_with_target_config(target_config))
+    .unwrap_or_else(|| Ok(self.config.clone()))?;
+```
+
+This enables features like:
+- Platform-specific compiler selection
+- Different build scripts for different operating systems
+- Conditional dependencies based on target platform
+
+## Extensibility
+
+The architecture is designed for extensibility:
+
+- **New backends** can be created by implementing `GenerateRecipe` and using `IntermediateBackend`
+- **Custom protocols** can be implemented by creating new `Protocol` implementations
+- **Backend-specific configuration** is supported through the `BackendConfig` trait
+- **Language-specific logic** is isolated in the `GenerateRecipe` implementation
+
+<Warning>
+When implementing a new backend, ensure your `GenerateRecipe` implementation properly handles all variant combinations and generates valid rattler-build recipes.
+</Warning>

@@ -1,0 +1,451 @@
+---
+title: Recipe Generation API
+description: Traits and types for converting project models into conda recipes
+---
+
+The recipe generation API provides the core abstraction for converting project models into intermediate conda recipes. By implementing `GenerateRecipe`, you can create custom build backends for different project types.
+
+## GenerateRecipe Trait
+
+Defined in: `src/generated_recipe.rs:36`
+
+The `GenerateRecipe` trait is responsible for converting a `ProjectModel` into an `IntermediateRecipe`. Implementations of this trait define how specific project types (Python, CMake, etc.) are built.
+
+```rust
+#[async_trait::async_trait]
+pub trait GenerateRecipe {
+    type Config: BackendConfig;
+    
+    async fn generate_recipe(
+        &self,
+        model: &ProjectModel,
+        config: &Self::Config,
+        manifest_path: PathBuf,
+        host_platform: Platform,
+        python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
+        channels: Vec<ChannelUrl>,
+        cache_dir: Option<PathBuf>,
+    ) -> miette::Result<GeneratedRecipe>;
+    
+    fn extract_input_globs_from_build(
+        &self,
+        config: &Self::Config,
+        workdir: impl AsRef<Path>,
+        editable: bool,
+    ) -> miette::Result<BTreeSet<String>>;
+    
+    fn default_variants(
+        &self,
+        host_platform: Platform,
+    ) -> miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>>;
+}
+```
+
+### Associated Types
+
+<ParamField path="Config" type="BackendConfig">
+  Backend-specific configuration type that can be deserialized from JSON
+</ParamField>
+
+### Methods
+
+#### `generate_recipe()`
+
+```rust
+async fn generate_recipe(
+    &self,
+    model: &ProjectModel,
+    config: &Self::Config,
+    manifest_path: PathBuf,
+    host_platform: Platform,
+    python_params: Option<PythonParams>,
+    variants: &HashSet<NormalizedKey>,
+    channels: Vec<ChannelUrl>,
+    cache_dir: Option<PathBuf>,
+) -> miette::Result<GeneratedRecipe>
+```
+
+Generates an `IntermediateRecipe` from a project model. This is the core method that backends implement.
+
+<ParamField path="model" type="&ProjectModel">
+  The project model containing targets, dependencies, and metadata
+</ParamField>
+
+<ParamField path="config" type="&Self::Config">
+  Backend-specific configuration options (e.g., build flags, environment variables)
+</ParamField>
+
+<ParamField path="manifest_path" type="PathBuf">
+  Path to the source directory (note: parameter name is misleading, will be updated)
+</ParamField>
+
+<ParamField path="host_platform" type="Platform">
+  The host platform for the build. Currently used to filter dependencies, but will be removed in favor of recipe selectors
+</ParamField>
+
+<ParamField path="python_params" type="Option<PythonParams>">
+  Python-specific parameters (e.g., `editable` flag). May be removed when build profiles are implemented
+</ParamField>
+
+<ParamField path="variants" type="&HashSet<NormalizedKey>">
+  The variant names available to the recipe. May influence recipe generation (e.g., conditional dependencies based on variants)
+</ParamField>
+
+<ParamField path="channels" type="Vec<ChannelUrl>">
+  Conda channels being used for the build. Can inform backend-specific logic
+</ParamField>
+
+<ParamField path="cache_dir" type="Option<PathBuf>">
+  Optional cache directory for storing cached data like HTTP responses or downloaded files
+</ParamField>
+
+<ResponseField name="return" type="miette::Result<GeneratedRecipe>">
+  A `GeneratedRecipe` containing the intermediate recipe and input globs
+</ResponseField>
+
+---
+
+#### `extract_input_globs_from_build()`
+
+```rust
+fn extract_input_globs_from_build(
+    &self,
+    config: &Self::Config,
+    workdir: impl AsRef<Path>,
+    editable: bool,
+) -> miette::Result<BTreeSet<String>>
+```
+
+Returns file globs that should trigger a rebuild when changed. These are files consumed during the build process.
+
+<ParamField path="config" type="&Self::Config">
+  Backend configuration
+</ParamField>
+
+<ParamField path="workdir" type="impl AsRef<Path>">
+  The working directory containing the build
+</ParamField>
+
+<ParamField path="editable" type="bool">
+  Whether this is an editable build
+</ParamField>
+
+<ResponseField name="return" type="miette::Result<BTreeSet<String>>">
+  A set of glob patterns (e.g., `**/*.py`, `CMakeLists.txt`)
+</ResponseField>
+
+**Default Implementation**: Returns an empty set.
+
+<Expandable title="Example Input Globs">
+```rust
+fn extract_input_globs_from_build(
+    &self,
+    _config: &Self::Config,
+    _workdir: impl AsRef<Path>,
+    _editable: bool,
+) -> miette::Result<BTreeSet<String>> {
+    Ok(BTreeSet::from([
+        "**/*.py".to_string(),
+        "pyproject.toml".to_string(),
+        "setup.py".to_string(),
+    ]))
+}
+```
+</Expandable>
+
+---
+
+#### `default_variants()`
+
+```rust
+fn default_variants(
+    &self,
+    host_platform: Platform,
+) -> miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>>
+```
+
+Returns default variant configurations for the backend. These can be completely overridden by user-supplied variants.
+
+<ParamField path="host_platform" type="Platform">
+  The target platform
+</ParamField>
+
+<ResponseField name="return" type="miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>>">
+  A map of variant names to their possible values
+</ResponseField>
+
+**Default Implementation**: Returns an empty map.
+
+**Use Cases:**
+- Setting default compiler configurations
+- Creating build matrices (e.g., test against multiple Python versions)
+- Changing rattler-build's default behavior
+
+<Expandable title="Example Variants">
+```rust
+fn default_variants(
+    &self,
+    _host_platform: Platform,
+) -> miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>> {
+    Ok(BTreeMap::from([
+        (
+            "python".into(),
+            vec![
+                Variable::from("3.9"),
+                Variable::from("3.10"),
+                Variable::from("3.11"),
+            ],
+        ),
+    ]))
+}
+```
+</Expandable>
+
+---
+
+## BackendConfig Trait
+
+Defined in: `src/generated_recipe.rs:98`
+
+```rust
+pub trait BackendConfig: DeserializeOwned + Clone {
+    fn debug_dir(&self) -> Option<&Path>;
+    fn merge_with_target_config(&self, target_config: &Self) -> miette::Result<Self>;
+}
+```
+
+Defines the interface for backend-specific configuration.
+
+### Methods
+
+#### `debug_dir()`
+
+Returns the debug directory from the configuration (deprecated).
+
+---
+
+#### `merge_with_target_config()`
+
+```rust
+fn merge_with_target_config(&self, target_config: &Self) -> miette::Result<Self>
+```
+
+Merges base configuration with target-specific overrides. Target values typically take precedence.
+
+<ParamField path="target_config" type="&Self">
+  The target-specific configuration to merge
+</ParamField>
+
+<ResponseField name="return" type="miette::Result<Self>">
+  The merged configuration
+</ResponseField>
+
+---
+
+## Supporting Types
+
+### GeneratedRecipe
+
+Defined in: `src/generated_recipe.rs:123`
+
+```rust
+#[derive(Default, Clone)]
+pub struct GeneratedRecipe {
+    pub recipe: IntermediateRecipe,
+    pub metadata_input_globs: BTreeSet<String>,
+    pub build_input_globs: BTreeSet<String>,
+}
+```
+
+<ParamField path="recipe" type="IntermediateRecipe">
+  The generated intermediate recipe (from `recipe_stage0` crate)
+</ParamField>
+
+<ParamField path="metadata_input_globs" type="BTreeSet<String>">
+  File globs that affect package metadata (triggers metadata recalculation)
+</ParamField>
+
+<ParamField path="build_input_globs" type="BTreeSet<String>">
+  File globs that affect the build (triggers rebuild)
+</ParamField>
+
+#### Helper Method: `from_model()`
+
+Defined in: `src/generated_recipe.rs:133`
+
+```rust
+pub fn from_model<M: MetadataProvider>(
+    model: ProjectModel,
+    provider: &mut M,
+) -> Result<Self, GenerateRecipeError<M::Error>>
+```
+
+Creates a basic recipe from a project model using a metadata provider. This is a default implementation that doesn't include build scripts or advanced features.
+
+<ParamField path="model" type="ProjectModel">
+  The project model
+</ParamField>
+
+<ParamField path="provider" type="&mut M">
+  A metadata provider that can extract additional information (e.g., from pyproject.toml)
+</ParamField>
+
+---
+
+### PythonParams
+
+Defined in: `src/generated_recipe.rs:19`
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct PythonParams {
+    pub editable: bool,
+}
+```
+
+<ParamField path="editable" type="bool">
+  Whether the Python package should be installed in editable mode (defaults to `false`)
+</ParamField>
+
+---
+
+## MetadataProvider Trait
+
+Defined in: `src/generated_recipe.rs:235`
+
+A trait for extracting metadata from external sources (e.g., parsing pyproject.toml, package.json, Cargo.toml).
+
+```rust
+pub trait MetadataProvider {
+    type Error: Diagnostic;
+    
+    fn name(&mut self) -> Result<Option<String>, Self::Error>;
+    fn version(&mut self) -> Result<Option<Version>, Self::Error>;
+    fn homepage(&mut self) -> Result<Option<String>, Self::Error>;
+    fn license(&mut self) -> Result<Option<String>, Self::Error>;
+    fn license_files(&mut self) -> Result<Option<Vec<String>>, Self::Error>;
+    fn summary(&mut self) -> Result<Option<String>, Self::Error>;
+    fn description(&mut self) -> Result<Option<String>, Self::Error>;
+    fn documentation(&mut self) -> Result<Option<String>, Self::Error>;
+    fn repository(&mut self) -> Result<Option<String>, Self::Error>;
+}
+```
+
+All methods have default implementations that return `Ok(None)`.
+
+### DefaultMetadataProvider
+
+Defined in: `src/generated_recipe.rs:273`
+
+```rust
+pub struct DefaultMetadataProvider;
+
+impl MetadataProvider for DefaultMetadataProvider {
+    type Error = Infallible;
+}
+```
+
+A no-op metadata provider that returns `None` for all fields.
+
+---
+
+## Error Types
+
+### GenerateRecipeError
+
+Defined in: `src/generated_recipe.rs:108`
+
+```rust
+pub enum GenerateRecipeError<MetadataProviderError: Diagnostic + 'static> {
+    NoNameDefined,
+    NoVersionDefined,
+    MetadataProviderError(String, MetadataProviderError),
+}
+```
+
+Errors that can occur during recipe generation:
+
+- `NoNameDefined` - Package name is missing from both model and provider
+- `NoVersionDefined` - Package version is missing from both model and provider  
+- `MetadataProviderError` - The metadata provider failed to extract a field
+
+---
+
+## Usage Example
+
+Implementing a custom backend:
+
+```rust
+use pixi_build_backend::{
+    GenerateRecipe, GeneratedRecipe, BackendConfig, PythonParams,
+};
+use pixi_build_types::ProjectModel;
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+struct MyBackendConfig {
+    build_flags: Vec<String>,
+}
+
+impl BackendConfig for MyBackendConfig {
+    fn debug_dir(&self) -> Option<&Path> {
+        None
+    }
+    
+    fn merge_with_target_config(&self, target: &Self) -> miette::Result<Self> {
+        Ok(Self {
+            build_flags: target.build_flags.clone(),
+        })
+    }
+}
+
+struct MyBackend;
+
+#[async_trait::async_trait]
+impl GenerateRecipe for MyBackend {
+    type Config = MyBackendConfig;
+    
+    async fn generate_recipe(
+        &self,
+        model: &ProjectModel,
+        config: &Self::Config,
+        manifest_path: PathBuf,
+        host_platform: Platform,
+        python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
+        channels: Vec<ChannelUrl>,
+        cache_dir: Option<PathBuf>,
+    ) -> miette::Result<GeneratedRecipe> {
+        // 1. Extract metadata from the project model
+        // 2. Convert dependencies to recipe requirements
+        // 3. Generate build scripts based on config
+        // 4. Create IntermediateRecipe
+        // 5. Determine input globs
+        
+        Ok(GeneratedRecipe {
+            recipe: intermediate_recipe,
+            metadata_input_globs: metadata_globs,
+            build_input_globs: build_globs,
+        })
+    }
+    
+    fn extract_input_globs_from_build(
+        &self,
+        _config: &Self::Config,
+        _workdir: impl AsRef<Path>,
+        _editable: bool,
+    ) -> miette::Result<BTreeSet<String>> {
+        Ok(BTreeSet::from([
+            "src/**/*.cpp".to_string(),
+            "CMakeLists.txt".to_string(),
+        ]))
+    }
+}
+```
+
+## Related APIs
+
+- [IntermediateBackend](/api/intermediate-backend) - Uses `GenerateRecipe` implementations
+- [ProjectModel](/api/project-model) - Input to recipe generation
+- [Protocol](/api/protocol) - Higher-level protocol that orchestrates recipe generation

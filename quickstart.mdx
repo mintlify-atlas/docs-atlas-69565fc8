@@ -1,80 +1,298 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started building Pixi packages with build backends in minutes
 ---
 
-## Get started in three steps
+Get up and running with Pixi Build Backends in minutes. This guide walks you through creating your first buildable package using the Python backend, then shows you how to explore other backends.
 
-Get your documentation site running locally and make your first customization.
+<Warning>
+`pixi-build` is a preview feature and will change until it is stabilized. You must opt in by adding "pixi-build" to `workspace.preview`:
 
-### Step 1: Set up your local environment
+```toml
+[workspace]
+preview = ["pixi-build"]
+```
+</Warning>
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- [Pixi](https://pixi.sh) installed (version 0.40.0 or later)
+- A project you want to package (or follow along with our examples)
+
+## Your First Build: Python Package
+
+<Steps>
+
+<Step title="Create a Python project with pyproject.toml">
+
+Let's start with a simple Python package. Create a new directory and add a `pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "my-awesome-package"
+version = "1.0.0"
+description = "My first Pixi-built package"
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.28",
+]
+```
+
+Add a simple Python module in `my_awesome_package/__init__.py`:
+
+```python
+def hello():
+    return "Hello from my-awesome-package!"
+```
+
+</Step>
+
+<Step title="Add build backend configuration to pixi.toml">
+
+Create a `pixi.toml` file that tells Pixi how to build your package:
+
+```toml
+[workspace]
+name = "my-awesome-package"
+version = "1.0.0"
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+preview = ["pixi-build"]
+
+[package]
+name = "my-awesome-package"
+version = "1.0.0"
+
+[package.build]
+backend = { name = "pixi-build-python", version = "*" }
+channels = ["https://prefix.dev/conda-forge"]
+```
+
+The `[package.build]` section is where the magic happens:
+- `backend.name` specifies which build backend to use (`pixi-build-python` for Python projects)
+- `backend.version` specifies the backend version (use `"*"` for latest)
+- `channels` tells Pixi where to find the backend package
+
+</Step>
+
+<Step title="Build your package">
+
+Build your package into a conda package:
+
+```bash
+pixi build
+```
+
+This command:
+1. Downloads and installs the `pixi-build-python` backend
+2. Reads your `pyproject.toml` and `pixi.toml` configuration
+3. Generates a rattler-build recipe
+4. Builds a conda package (`.conda` file)
+
+The built package will be in `.pixi/build/` directory.
+
+<Tip>
+Use `pixi build --verbose` to see detailed output of what's happening during the build process.
+</Tip>
+
+</Step>
+
+<Step title="Install and test your package">
+
+Install your newly built package in a Pixi environment:
+
+```bash
+pixi add --manifest-path pixi.toml my-awesome-package
+pixi install
+```
+
+Test it works:
+
+```bash
+pixi run python -c "import my_awesome_package; print(my_awesome_package.hello())"
+```
+
+</Step>
+
+</Steps>
+
+## Understanding the Build System Section
+
+The `[package.build]` section in your `pixi.toml` controls how your package is built:
+
+```toml
+[package.build]
+# Required: which backend to use
+backend = { name = "pixi-build-python", version = "*" }
+
+# Required: where to find the backend
+channels = ["https://prefix.dev/conda-forge"]
+
+# Optional: backend-specific configuration
+[package.build.config]
+noarch = true  # Build platform-independent package
+env = { SETUPTOOLS_SCM_PRETEND_VERSION = "1.0.0" }
+```
+
+Each backend has its own configuration options. See the [backend documentation](/backends/python) for details.
+
+## Common Build Commands
+
+Here are the most common commands you'll use:
+
+```bash
+# Build all packages in your workspace
+pixi build
+
+# Build a specific package
+pixi build --package my-package
+
+# Build with verbose output
+pixi build --verbose
+
+# Build for a specific platform
+pixi build --target-platform linux-64
+```
+
+## Quick Start with Other Backends
+
+### Rust Package
+
+For a Rust project with `Cargo.toml`:
+
+```toml
+[package.build]
+backend = { name = "pixi-build-rust", version = "*" }
+channels = ["https://prefix.dev/conda-forge"]
+```
+
+The Rust backend automatically reads metadata from your `Cargo.toml` and builds your project using `cargo install`.
+
+### CMake C++ Project
+
+For a CMake-based C++ project:
+
+```toml
+[package.build]
+backend = { name = "pixi-build-cmake", version = "*" }
+channels = ["https://prefix.dev/conda-forge"]
+
+[package.build.config]
+compilers = ["c", "cxx"]
+extra-args = ["-DCMAKE_BUILD_TYPE=Release"]
+```
+
+The CMake backend uses Ninja and automatically configures compilers for your platform.
+
+### Using rattler-build Recipes
+
+If you need full control, use the rattler-build backend with a `recipe.yaml`:
+
+```toml
+[package.build]
+backend = { name = "pixi-build-rattler-build", version = "*" }
+channels = ["https://prefix.dev/conda-forge"]
+```
+
+This backend looks for a `recipe.yaml` file in your project root and builds it directly with [rattler-build](https://rattler.build).
+
+## Troubleshooting
 
 <AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
 
-### Step 2: Deploy your changes
+<Accordion title="Build fails with 'backend not found'">
+Make sure you've added the correct channels:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```toml
+[package.build]
+channels = ["https://prefix.dev/conda-forge"]
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+You can also add the pixi-build-backends channel for the latest versions:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
+```toml
+[package.build]
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge"
+]
+```
 </Accordion>
 
-## Next steps
+<Accordion title="Want to see the generated recipe?">
+The build backend generates a complete rattler-build recipe during the build process. You can find it in:
 
-Now that you have your docs running, explore these key features:
+```
+.pixi/build/work/<package-name>--<hash>/debug/recipe.yaml
+```
+
+This is useful for debugging build issues or understanding how your package is being built.
+
+To rebuild using the generated recipe directly:
+
+```bash
+rattler-build build --recipe .pixi/build/work/<package-name>--<hash>/debug/
+```
+</Accordion>
+
+<Accordion title="How do I add build dependencies?">
+Use the `[package.build-dependencies]` section for build-time dependencies:
+
+```toml
+[package.build-dependencies]
+cmake = ">=3.20"
+ninja = "*"
+
+[package.host-dependencies]
+python = "3.11"
+hatchling = "*"
+
+[package.run-dependencies]
+requests = ">=2.28"
+```
+
+See [Dependency Types](https://pixi.sh/latest/build/dependency_types/) for more information.
+</Accordion>
+
+<Accordion title="Python: Dependencies from pyproject.toml not being used?">
+By default, automatic PyPI-to-conda dependency mapping is disabled. To enable it:
+
+```toml
+[package.build.config]
+ignore-pypi-mapping = false
+```
+
+This will automatically map dependencies from your `pyproject.toml` to conda packages.
+</Accordion>
+
+</AccordionGroup>
+
+## Next Steps
+
+Now that you've built your first package, explore more advanced topics:
 
 <CardGroup cols={2}>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
+<Card title="Available Backends" icon="wrench" href="/backends/python">
+  Explore all available build backends: Python, Rust, CMake, ROS, Mojo, and rattler-build
 </Card>
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
+<Card title="Compilers" icon="code" href="/concepts/compilers">
+  Learn how Pixi integrates with conda-forge's compiler infrastructure for cross-platform builds
 </Card>
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
+<Card title="Pixi Build Tutorials" icon="graduation-cap" href="https://pixi.sh/latest/build/getting_started/">
+  Step-by-step tutorials for building Python, C++, and Rust packages
 </Card>
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
+<Card title="Build Reference" icon="book" href="https://pixi.sh/latest/reference/pixi_manifest/#the-package-build-section">
+  Complete reference for the `[package.build]` section in pixi.toml
 </Card>
 
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

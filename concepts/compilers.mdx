@@ -1,0 +1,373 @@
+---
+title: Compiler Integration
+description: How Pixi Build Backends integrate with conda-forge's compiler infrastructure for cross-platform builds
+---
+
+Some Pixi Build Backends support configurable compiler selection through the `compilers` configuration option. This feature integrates with conda-forge's compiler infrastructure to provide cross-platform, ABI-compatible builds.
+
+<Warning>
+`pixi-build` is a preview feature and will change until it is stabilized. You must opt in to this feature by adding "pixi-build" to `workspace.preview`:
+
+```toml
+[workspace]
+preview = ["pixi-build"]
+```
+</Warning>
+
+## How Conda-forge Compilers Work
+
+Understanding conda-forge's compiler system is essential for effectively using Pixi Build compiler configuration.
+
+### Compiler Selection and Platform Resolution
+
+When you specify `compilers = ["c", "cxx"]` in your Pixi Build configuration, the backend automatically selects the appropriate platform-specific compiler packages based on your target platform and build variants.
+
+If you are cross-compiling, the target platform will be the platform you are compiling for. Otherwise, the target platform is your current platform.
+
+For an `amd64` target platform, these are the default compiler packages:
+
+| Compiler | Linux | macOS | Windows |
+|----------|-------|--------|----------|
+| `c` | `gcc_linux-64` | `clang_osx-64` | `vs2019_win-64` |
+| `cxx` | `gxx_linux-64` | `clangxx_osx-64` | `vs2019_win-64` |
+| `fortran` | `gfortran_linux-64` | `gfortran_osx-64` | `vs2019_win-64` |
+
+### Build Variants and Compiler Selection
+
+Compiler selection works through a build variant system. Build variants allow you to specify different versions or types of compilers for your builds, creating a build matrix that can target multiple compiler configurations.
+
+## Compiler Selection Process
+
+When you specify `compilers = ["c"]` in your Pixi Build configuration, the system uses a **variant system** to determine the exact compiler package for your platform:
+
+<Steps>
+
+### Determine which compilers to add
+
+If you specified the compiler in the configuration, it will use that. For example, with `compilers = ["c"]`, the C compiler will be requested.
+
+If there's no compiler configuration, the backend's default will be used (see [Backend-Specific Defaults](#backend-specific-defaults)).
+
+### Determine the variants to consider
+
+The variant names follow the pattern `{language}_compiler` and `{language}_compiler_version`.
+
+For a C compiler, this would be `c_compiler` and `c_compiler_version`.
+
+### Create outputs for each variant combination
+
+Each variant can have multiple values, and each combination of these values creates a separate output.
+
+For example, with the following configuration, multiple GCC versions could be used to build the package:
+
+```toml
+[workspace.build-variants]
+c_compiler = ["gcc"]
+c_compiler_version = ["11.4", "14.0"]
+```
+
+If `{language}_compiler_version` is not set, there's no constraint on the compiler version.
+
+If `{language}_compiler` is not set, the build backends use these default values:
+
+- **c**: `gcc` on Linux, `clang` on macOS, `vs2017` on Windows
+- **cxx**: `gxx` on Linux, `clangxx` on macOS, `vs2017` on Windows
+- **fortran**: `gfortran` on all platforms
+- **rust**: `rust` on all platforms
+
+### Request packages for each output
+
+For each output, a package is requested as a build dependency with the pattern:
+
+```
+{compiler}_{target_platform} {compiler_version}
+```
+
+Where:
+- `{compiler}` - The compiler name determined in the previous step
+- `{target_platform}` - The platform you are compiling for
+- `{compiler_version}` - Optional version constraint
+
+For example, building on `linux-64` with the configuration above would create two outputs:
+- One requesting `gcc_linux-64 11.4`
+- One requesting `gcc_linux-64 14.0`
+
+</Steps>
+
+## Implementation Details
+
+The compiler requirements are added to the recipe's build dependencies. Here's how it works in the source code (`compilers.rs:77-103`):
+
+```rust
+pub fn add_compilers_to_requirements<S>(
+    compilers: &[String],
+    requirements: &mut Vec<Item<PackageDependency>>,
+    dependencies: &crate::traits::targets::Dependencies<S>,
+    host_platform: &Platform,
+) {
+    for compiler_str in compilers {
+        // Check if the specific compiler is already present in build dependencies
+        let language_compiler = default_compiler(host_platform, compiler_str);
+        let source_package_name = pixi_build_types::SourcePackageName::from(language_compiler);
+
+        if !dependencies.build.contains_key(&source_package_name) {
+            let template = format!("${{{{ compiler('{compiler_str}') }}}}");
+            requirements.push(Item::Value(Value::Template(template)));
+        }
+    }
+}
+```
+
+The compiler template function (e.g., `{{ compiler('c') }}`) is a Jinja2 template that rattler-build expands based on the variant configuration and target platform.
+
+### Default Compiler Selection
+
+The `default_compiler` function determines platform-specific defaults (`compilers.rs:34-69`):
+
+```rust
+pub fn default_compiler(platform: &Platform, language: &str) -> String {
+    match language {
+        // Platform agnostic compilers
+        "fortran" => "gfortran",
+        // Platform specific compilers
+        "c" | "cxx" => {
+            if platform.is_windows() {
+                match language {
+                    "c" => "vs2019",
+                    "cxx" => "vs2019",
+                    _ => unreachable!(),
+                }
+            } else if platform.is_osx() {
+                match language {
+                    "c" => "clang",
+                    "cxx" => "clangxx",
+                    _ => unreachable!(),
+                }
+            } else {
+                match language {
+                    "c" => "gcc",
+                    "cxx" => "gxx",
+                    _ => unreachable!(),
+                }
+            }
+        }
+        _ => language,
+    }
+    .to_string()
+}
+```
+
+## Overriding Compilers in Pixi Workspaces
+
+Pixi workspaces provide powerful mechanisms to override compiler variants through build variant configuration. This allows users to customize compiler selection without modifying individual package recipes.
+
+### Workspace-Level Overrides
+
+To override the default C compiler:
+
+```toml
+# pixi.toml
+[workspace.build-variants]
+c_compiler = ["clang"]
+c_compiler_version = ["11.4"]
+```
+
+### Platform-Specific Overrides
+
+To override compilers specifically for Windows:
+
+```toml
+# pixi.toml
+[workspace.target.win.build-variants]
+c_compiler = ["vs2022"]
+cxx_compiler = ["vs2022"]
+```
+
+Alternatively, you can specify the version separately:
+
+```toml
+[workspace.target.win.build-variants]
+c_compiler = ["vs"]
+cxx_compiler = ["vs"]
+c_compiler_version = ["2022"]
+cxx_compiler_version = ["2022"]
+```
+
+## Available Compilers
+
+Which compilers are available depends on the channels you target. Through the conda-forge infrastructure, the following compilers are generally available across all platforms:
+
+### Core Compilers
+
+| Compiler | Description | Platforms |
+|----------|-------------|------------|
+| `c` | C compiler | Linux (gcc), macOS (clang), Windows (vs2019) |
+| `cxx` | C++ compiler | Linux (gxx), macOS (clangxx), Windows (vs2019) |
+| `fortran` | Fortran compiler | All platforms (gfortran) |
+| `rust` | Rust compiler | All platforms |
+| `go` | Go compiler | All platforms |
+
+### Specialized Compilers
+
+| Compiler | Description | Platforms |
+|----------|-------------|------------|
+| `cuda` | NVIDIA CUDA compiler | Linux, Windows, (limited macOS) |
+
+## Backend-Specific Defaults
+
+Only certain Pixi Build backends support the `compilers` configuration option. Each supporting backend has sensible defaults based on typical requirements for that language ecosystem:
+
+| Backend | Compiler Support | Default Compilers | Rationale |
+|---------|------------------|-------------------|------------|
+| **pixi-build-cmake** | ✅ Supported | `["cxx"]` | Most CMake projects are C++ |
+| **pixi-build-rust** | ✅ Supported | `["rust"]` | Rust projects need the Rust compiler |
+| **pixi-build-python** | ✅ Supported | `[]` | Pure Python packages typically don't need compilers |
+| **pixi-build-mojo** | ✅ Supported | `[]` | `mojo-compiler` must be specified in `package.*-dependencies` manually |
+| **pixi-build-rattler-build** | ❌ Not Supported | N/A | Uses direct `recipe.yaml` - configure compilers directly in recipe |
+
+<Info>
+Backend developers can add compiler configuration support by implementing the `compilers` field in their backend configuration and integrating with the shared compiler infrastructure in `pixi-build-backend`.
+</Info>
+
+## Configuration Examples
+
+<Note>
+Compiler configuration is only available in backends that have specifically implemented this feature. Check your backend's documentation to see if it supports compiler configuration.
+</Note>
+
+### Basic Compiler Configuration
+
+<Tabs>
+  <Tab title="Default Compilers">
+    ```toml
+    # Use backend defaults (no compilers specified)
+    [package.build.config]
+    # CMake backend will default to ["cxx"]
+    # Python backend will default to []
+    ```
+  </Tab>
+  <Tab title="Custom Compilers">
+    ```toml
+    # Override with specific compilers
+    [package.build.config]
+    compilers = ["c", "cxx", "fortran"]
+    ```
+  </Tab>
+</Tabs>
+
+### Platform-Specific Compiler Configuration
+
+```toml
+# Base configuration for most platforms
+[package.build.config]
+compilers = ["cxx"]
+
+# Linux needs additional CUDA support
+[package.build.target.linux-64.config]
+compilers = ["cxx", "cuda"]
+
+# Windows needs additional C compiler for some dependencies
+[package.build.target.win-64.config]
+compilers = ["c", "cxx"]
+```
+
+### Multi-Version Builds
+
+Create a build matrix with multiple compiler versions:
+
+```toml
+[workspace.build-variants]
+c_compiler = ["gcc"]
+c_compiler_version = ["11", "12", "13"]
+cxx_compiler = ["gxx"]
+cxx_compiler_version = ["11", "12", "13"]
+
+[package.build.config]
+compilers = ["c", "cxx"]
+```
+
+This configuration will create 9 outputs (3 C compiler versions × 3 C++ compiler versions).
+
+### Cross-Compilation
+
+When cross-compiling, the target platform determines which compiler packages are used:
+
+```bash
+# Build for linux-aarch64 from linux-64
+pixi build --target-platform linux-aarch64
+```
+
+With this command and `compilers = ["c"]`, the backend will request `gcc_linux-aarch64` instead of `gcc_linux-64`.
+
+## Standard Library Support
+
+Some compilers also require standard library packages. The system automatically adds stdlib requirements when appropriate variant keys are present (`compilers.rs:116-137`):
+
+```rust
+pub fn add_stdlib_to_requirements(
+    compilers: &[String],
+    requirements: &mut Vec<Item<PackageDependency>>,
+    variants: &HashSet<NormalizedKey>,
+) {
+    // For each compiler check if there is a variant stdlib(compiler) key.
+    for stdlib in compilers
+        .iter()
+        .map(Deref::deref)
+        .filter_map(stdlib_for_language)
+        .unique()
+    {
+        let stdlib_key = format!("{stdlib}_stdlib");
+        if !variants.contains(&NormalizedKey(stdlib_key)) {
+            continue;
+        }
+
+        // If the stdlib key exists, add it to the requirements
+        let template = format!("${{{{ stdlib('{stdlib}') }}}}");
+        requirements.push(Item::Value(Value::Template(template)));
+    }
+}
+```
+
+This ensures that the appropriate standard library (e.g., `libstdc++` for GCC or `libc++` for Clang) is included as a dependency.
+
+## Best Practices
+
+<Steps>
+
+### Use backend defaults when possible
+
+Most backends provide sensible compiler defaults. Only override when you have specific requirements.
+
+### Specify exact versions for reproducibility
+
+When building production packages, pin compiler versions to ensure reproducible builds:
+
+```toml
+[workspace.build-variants]
+cxx_compiler_version = ["13.2"]
+```
+
+### Test across compiler versions
+
+Use build variants to test compatibility across multiple compiler versions:
+
+```toml
+[workspace.build-variants]
+c_compiler_version = ["11", "12", "13"]
+```
+
+### Platform-specific optimization
+
+Use target-specific configuration to optimize for each platform:
+
+```toml
+[package.build.target.linux-64.config]
+compilers = ["cxx"]
+cmake-args = ["-DUSE_AVX2=ON"]
+
+[package.build.target.osx-arm64.config]
+compilers = ["cxx"]
+cmake-args = ["-DUSE_NEON=ON"]
+```
+
+</Steps>

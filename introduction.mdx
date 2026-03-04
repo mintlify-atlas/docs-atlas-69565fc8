@@ -1,0 +1,178 @@
+---
+title: Introduction to Pixi Build Backends
+description: Learn about Pixi Build Backends - specialized implementations for building conda packages from source across multiple languages and build systems.
+---
+
+# Introduction to Pixi Build Backends
+
+Pixi Build Backends is a collection of specialized build backend implementations designed to facilitate building [Pixi](https://pixi.sh) packages directly from their source code. These backends enable seamless integration with the Pixi ecosystem, supporting multiple programming languages and build systems while maintaining the conda ecosystem's cross-platform compatibility.
+
+## What Are Build Backends?
+
+Build backends are executables that follow a specific protocol to decouple the building of conda packages from Pixi itself. This architecture allows for:
+
+<CardGroup cols={2}>
+  <Card title="Language-Specific Optimization" icon="code">
+    Each backend is tailored for specific programming languages and build tools, providing optimized build workflows for Python, Rust, C++, ROS, Mojo, and more.
+  </Card>
+  
+  <Card title="Modular Design" icon="puzzle-piece">
+    Backends can be developed, updated, and distributed independently from Pixi core, enabling faster iteration and specialized improvements.
+  </Card>
+  
+  <Card title="Extensibility" icon="plus">
+    New backends can be added without modifying Pixi core. The standardized protocol ensures consistent behavior across all backends.
+  </Card>
+  
+  <Card title="Cross-Platform Support" icon="globe">
+    All backends work consistently across Linux, macOS, and Windows, leveraging conda-forge's compiler infrastructure.
+  </Card>
+</CardGroup>
+
+## Available Build Backends
+
+The repository currently provides six specialized build backends, each designed for specific use cases:
+
+<CardGroup cols={2}>
+  <Card title="pixi-build-python" icon="python" href="/backends/python">
+    Build Python packages with PEP 517/518 compliance. Supports automatic PyPI-to-conda dependency mapping, compiler detection for extensions, and works with modern Python packaging tools.
+  </Card>
+  
+  <Card title="pixi-build-rust" icon="rust" href="/backends/rust">
+    Build Rust projects using Cargo. Automatic metadata extraction from Cargo.toml, sccache integration for faster builds, and OpenSSL support out of the box.
+  </Card>
+  
+  <Card title="pixi-build-cmake" icon="hammer" href="/backends/cmake">
+    Build C/C++ projects with CMake. Uses Ninja for optimal performance, automatic compiler detection, and follows CMake best practices with sensible defaults.
+  </Card>
+  
+  <Card title="pixi-build-rattler-build" icon="file-code" href="/backends/rattler-build">
+    Build packages using rattler-build recipes directly. Provides full control over the build process and supports all standard rattler-build features.
+  </Card>
+  
+  <Card title="pixi-build-mojo" icon="fire" href="/backends/mojo">
+    Build Mojo applications and libraries. Auto-discovers project structure, supports both binaries and packages, and integrates with the Mojo compiler.
+  </Card>
+  
+  <Card title="pixi-build-ros" icon="robot" href="/backends/ros">
+    Build ROS (Robot Operating System) packages for both ROS1 and ROS2. Automatic package.xml parsing, dependency mapping, and support for ament_cmake, ament_python, and catkin.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Standardized Protocol
+
+All backends follow the same protocol and manifest specifications defined in `pixi.toml`. This standardization means:
+
+- Consistent configuration syntax across all backends
+- Predictable build behavior regardless of language
+- Easy switching between backends when needed
+
+### Automatic Dependency Resolution
+
+Backends automatically handle dependencies from your project's native configuration files:
+
+- **Python**: `pyproject.toml` dependencies mapped to conda packages
+- **Rust**: `Cargo.toml` dependencies
+- **ROS**: `package.xml` dependencies mapped using RoboStack conventions
+- **CMake**: Dependencies specified in `pixi.toml`
+
+### Compiler Integration
+
+All backends integrate with conda-forge's compiler infrastructure, providing:
+
+- Platform-specific compilers (GCC on Linux, Clang on macOS, MSVC on Windows)
+- ABI compatibility with conda-forge packages
+- Cross-compilation support
+- Automatic compiler version management
+
+### Incremental Builds
+
+Backends support incremental compilation through:
+
+- Input glob patterns to detect changes
+- Build caching where appropriate (sccache for Rust/C++)
+- Work directory management for build artifacts
+
+## Distribution Channels
+
+All backends are available through conda channels:
+
+- **conda-forge**: Stable releases available at [https://prefix.dev/conda-forge](https://prefix.dev/conda-forge)
+- **pixi-build-backends**: Latest versions at [https://prefix.dev/channels/pixi-build-backends](https://prefix.dev/channels/pixi-build-backends)
+
+<Note>
+For the latest backend versions, extend your channel list with the `pixi-build-backends` channel where the newest versions are pushed first.
+</Note>
+
+## Getting Started
+
+Ready to start building packages with Pixi Build Backends? Check out these resources:
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get up and running in minutes with a simple example project
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation and configuration instructions
+  </Card>
+  
+  <Card title="Tutorial Series" icon="book" href="https://pixi.sh/latest/build/getting_started/">
+    Learn how to use pixi build in practice with step-by-step guides
+  </Card>
+  
+  <Card title="Key Concepts" icon="lightbulb" href="/concepts/compilers">
+    Understand compilers and other important concepts
+  </Card>
+</CardGroup>
+
+## When to Use Each Backend
+
+### Choose pixi-build-python when:
+- Building pure Python packages or packages with C extensions
+- Working with PEP 517/518 compliant projects
+- You want automatic PyPI-to-conda dependency mapping
+
+### Choose pixi-build-rust when:
+- Building Rust applications or libraries
+- Working with Cargo-based projects
+- You need fast compilation with sccache integration
+
+### Choose pixi-build-cmake when:
+- Building C or C++ projects
+- Your project uses CMake as its build system
+- You need fine-grained control over compilation flags
+
+### Choose pixi-build-rattler-build when:
+- You have existing rattler-build recipes
+- You need features not available in other backends
+- Maximum control over the build process is required
+
+### Choose pixi-build-mojo when:
+- Building Mojo applications or libraries
+- Working with Mojo packages and binaries
+- You want automatic project structure discovery
+
+### Choose pixi-build-ros when:
+- Building ROS1 or ROS2 packages
+- Working with ament_cmake, ament_python, or catkin
+- You need automatic ROS dependency resolution
+
+<Tip>
+Not sure which backend to use? Start with the [Quick Start Guide](/quickstart) which demonstrates the most common use cases.
+</Tip>
+
+## Community and Support
+
+- **GitHub**: [github.com/prefix-dev/pixi](https://github.com/prefix-dev/pixi) - Source code and issue tracking
+- **Discord**: [Join our community](https://discord.gg/kKV8ZxyzY4) - Ask questions and get help
+- **Prefix.dev**: [prefix.dev](https://prefix.dev/) - The company behind Pixi
+
+## Related Projects
+
+- **[Pixi](https://pixi.sh)**: Package management and workflow tool built on conda
+- **[Rattler](https://github.com/conda/rattler)**: Fast conda implementation in Rust
+- **[rattler-build](https://rattler.build)**: Blazing fast build system for conda packages
+- **[conda-forge](https://conda-forge.org/)**: Community-driven conda package repository

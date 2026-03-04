@@ -1,0 +1,392 @@
+---
+title: Creating a Build Backend
+description: Step-by-step guide to implementing a custom build backend for Pixi
+---
+
+This guide walks you through creating a new build backend for Pixi. Build backends are executables that follow a specific protocol to convert project manifests into conda packages.
+
+## Overview
+
+A build backend implements the JSON-RPC protocol defined by Pixi to:
+
+1. **Negotiate capabilities** with the Pixi frontend
+2. **Initialize** with project configuration and manifest data
+3. **Generate outputs** by analyzing the project and producing package metadata
+4. **Build packages** by generating rattler-build recipes and executing builds
+
+## Architecture
+
+Pixi build backends are structured around two core traits:
+
+- **`GenerateRecipe`**: Converts project models into rattler-build recipes
+- **`Protocol`**: Handles JSON-RPC communication with Pixi
+
+The `IntermediateBackend` type bridges these traits, providing the infrastructure for protocol handling and recipe generation.
+
+<Steps>
+
+### Create your generator struct
+
+Start by defining a struct that implements the `GenerateRecipe` trait. This is the core of your backend's logic.
+
+```rust title="src/main.rs"
+use pixi_build_backend::{
+    generated_recipe::{GenerateRecipe, GeneratedRecipe, PythonParams},
+    intermediate_backend::IntermediateBackendInstantiator,
+    traits::ProjectModel,
+};
+use rattler_conda_types::{ChannelUrl, Platform};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+#[derive(Default, Clone)]
+pub struct MyGenerator {}
+
+#[async_trait::async_trait]
+impl GenerateRecipe for MyGenerator {
+    type Config = MyBackendConfig;
+
+    async fn generate_recipe(
+        &self,
+        model: &pixi_build_types::ProjectModel,
+        config: &Self::Config,
+        manifest_path: PathBuf,
+        host_platform: Platform,
+        python_params: Option<PythonParams>,
+        variants: &HashSet<NormalizedKey>,
+        channels: Vec<ChannelUrl>,
+        cache_dir: Option<PathBuf>,
+    ) -> miette::Result<GeneratedRecipe> {
+        // Your recipe generation logic here
+        todo!("Implement recipe generation")
+    }
+}
+```
+
+See `pixi-build-python/src/main.rs:34` or `pixi-build-rust/src/main.rs:29` for complete examples.
+
+### Define backend configuration
+
+Create a configuration struct that users can specify in their `pixi.toml`:
+
+```rust title="src/config.rs"
+use pixi_build_backend::generated_recipe::BackendConfig;
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct MyBackendConfig {
+    /// List of compilers to use (e.g., ["c", "cxx"])
+    pub compilers: Option<Vec<String>>,
+    
+    /// Additional build flags
+    pub build_flags: Option<Vec<String>>,
+    
+    /// Debug directory for intermediate files
+    #[serde(default)]
+    pub debug_dir: Option<PathBuf>,
+}
+
+impl BackendConfig for MyBackendConfig {
+    fn debug_dir(&self) -> Option<&Path> {
+        self.debug_dir.as_deref()
+    }
+
+    fn merge_with_target_config(&self, target_config: &Self) -> miette::Result<Self> {
+        // Merge target-specific config with base config
+        Ok(Self {
+            compilers: target_config.compilers.clone()
+                .or_else(|| self.compilers.clone()),
+            build_flags: target_config.build_flags.clone()
+                .or_else(|| self.build_flags.clone()),
+            debug_dir: target_config.debug_dir.clone()
+                .or_else(|| self.debug_dir.clone()),
+        })
+    }
+}
+```
+
+See `pixi-build-cmake/src/config.rs` for a real implementation.
+
+### Implement recipe generation
+
+The `generate_recipe` method is where you convert the project model into a rattler-build recipe:
+
+```rust
+use recipe_stage0::recipe::{IntermediateRecipe, Requirements};
+use pixi_build_backend::generated_recipe::GeneratedRecipe;
+
+async fn generate_recipe(
+    &self,
+    model: &pixi_build_types::ProjectModel,
+    config: &Self::Config,
+    manifest_path: PathBuf,
+    host_platform: Platform,
+    python_params: Option<PythonParams>,
+    variants: &HashSet<NormalizedKey>,
+    channels: Vec<ChannelUrl>,
+    cache_dir: Option<PathBuf>,
+) -> miette::Result<GeneratedRecipe> {
+    // 1. Create base recipe from the project model
+    let mut generated_recipe = GeneratedRecipe::from_model(
+        model.clone(),
+        &mut DefaultMetadataProvider
+    )?;
+
+    // 2. Add compilers to build requirements
+    let requirements = &mut generated_recipe.recipe.requirements;
+    let compilers = config.compilers.clone()
+        .unwrap_or_else(|| vec!["c".to_string(), "cxx".to_string()]);
+    
+    pixi_build_backend::compilers::add_compilers_to_requirements(
+        &compilers,
+        &mut requirements.build,
+        &model.dependencies(Some(host_platform)),
+        &host_platform,
+    );
+
+    // 3. Add build tools
+    for tool in ["make", "pkg-config"] {
+        requirements.build.push(tool.parse()?);
+    }
+
+    // 4. Generate build script
+    let build_script = self.generate_build_script(config, &manifest_path)?;
+    generated_recipe.recipe.build.script = Some(build_script);
+
+    Ok(generated_recipe)
+}
+```
+
+See `pixi-build-cmake/src/main.rs:31` for CMake-specific implementation.
+
+### Create the protocol handler
+
+The `IntermediateBackend` type implements the `Protocol` trait for you. You just need to set up the server:
+
+```rust title="src/main.rs"
+use pixi_build_backend::{
+    cli::main_ext,
+    intermediate_backend::IntermediateBackendInstantiator,
+};
+use rattler_build::console_utils::LoggingOutputHandler;
+
+#[tokio::main]
+async fn main() -> miette::Result<()> {
+    let logging_output_handler = LoggingOutputHandler::default();
+    
+    let generator = Arc::new(MyGenerator::default());
+    let instantiator = IntermediateBackendInstantiator::new(
+        logging_output_handler,
+        generator,
+    );
+    
+    main_ext(instantiator).await
+}
+```
+
+The `main_ext` function handles:
+- CLI argument parsing
+- JSON-RPC server setup over stdio or HTTP
+- Protocol implementation via `IntermediateBackend`
+
+See `pixi-build-python/src/main.rs` for the complete main function pattern.
+
+### Implement protocol methods
+
+The `IntermediateBackend` automatically implements two key protocol methods using your `GenerateRecipe` implementation:
+
+**`conda_outputs`** (implemented at `intermediate_backend.rs:224`)
+- Generates all possible package outputs with their variants
+- Returns metadata including dependencies, build strings, and platform info
+- Saves debug files to `.pixi/build/work/<package>--<hash>/debug/`
+
+**`conda_build_v1`** (implemented at `intermediate_backend.rs:545`)
+- Builds a specific package variant
+- Invokes `rattler-build` with the generated recipe
+- Returns the built package path and metadata
+
+You don't need to implement these yourself - they use your `generate_recipe` method.
+
+### Handle platform-specific dependencies
+
+When accessing dependencies from the project model, use the platform-aware API:
+
+```rust
+// ✅ Correct: Use platform-aware API
+let model_dependencies = model.dependencies(Some(host_platform));
+
+// Check if a dependency is present
+if !model_dependencies.build.contains_key(&package_name) {
+    requirements.build.push(package_spec);
+}
+
+// Access build and host dependencies together
+let all_build_deps = model_dependencies.build_and_host_names();
+```
+
+This properly handles target selectors like `[target.linux-64]` from `pixi.toml`.
+
+### Add metadata extraction (optional)
+
+If your build system has a manifest file (like `Cargo.toml`, `pyproject.toml`, `CMakeLists.txt`), create a metadata provider:
+
+```rust
+use pixi_build_backend::generated_recipe::MetadataProvider;
+
+pub struct MyMetadataProvider {
+    manifest_root: PathBuf,
+    // parsed data
+}
+
+impl MetadataProvider for MyMetadataProvider {
+    type Error = MyMetadataError;
+
+    fn name(&mut self) -> Result<Option<String>, Self::Error> {
+        // Extract package name from manifest
+        Ok(Some("my-package".to_string()))
+    }
+
+    fn version(&mut self) -> Result<Option<Version>, Self::Error> {
+        // Extract version from manifest
+        Ok(Some(Version::from_str("1.0.0")?)
+    }
+
+    fn description(&mut self) -> Result<Option<String>, Self::Error> {
+        // Extract description
+        Ok(None)
+    }
+
+    fn license(&mut self) -> Result<Option<String>, Self::Error> {
+        // Extract license
+        Ok(None)
+    }
+}
+```
+
+See `pixi-build-python/src/metadata.rs` or `pixi-build-rust/src/metadata.rs` for complete examples.
+
+### Build and test
+
+Build your backend:
+
+```bash
+cargo build --release
+```
+
+Test it with a sample project:
+
+```toml title="pixi.toml"
+[package]
+name = "test-package"
+version = "0.1.0"
+
+[build-system]
+requires = ["pixi-build-my-backend"]
+build-backend = "pixi-build-my-backend"
+
+[tool.pixi-build-my-backend]
+compilers = ["c", "cxx"]
+build-flags = ["-O2"]
+```
+
+Run the build:
+
+```bash
+pixi build
+```
+
+</Steps>
+
+## Key Implementation Details
+
+### Recipe Structure
+
+The `IntermediateRecipe` type from `recipe-stage0` represents a rattler-build recipe with these key sections:
+
+```rust
+pub struct IntermediateRecipe {
+    pub package: Package,      // Name, version
+    pub build: Build,          // Script, number, skip conditions
+    pub requirements: Requirements, // Build, host, run dependencies
+    pub about: About,          // License, description, homepage
+    pub tests: Vec<Test>,      // Test definitions
+    // ... more fields
+}
+```
+
+### Variant Handling
+
+Variants allow building multiple configurations of the same package. The backend:
+
+1. Defines default variants via `default_variants()` method
+2. Combines with user-supplied variants from `pixi.toml`
+3. Generates one output per variant combination
+4. Uses variants to inject compiler versions, Python versions, etc.
+
+```rust
+fn default_variants(
+    &self,
+    host_platform: Platform,
+) -> miette::Result<BTreeMap<NormalizedKey, Vec<Variable>>> {
+    let mut variants = BTreeMap::new();
+    
+    // Example: Set default Python version
+    variants.insert(
+        "python".into(),
+        vec![Variable::from("3.11")]
+    );
+    
+    Ok(variants)
+}
+```
+
+### Debug Output
+
+The backend automatically saves debug information to:
+
+```
+.pixi/build/work/<package>--<hash>/debug/
+├── recipe.yaml              # Complete recipe for all variants
+├── variants.yaml            # All variant configurations
+└── recipe/
+    └── <variant_hash>/
+        ├── recipe.yaml      # Variant-specific recipe
+        └── variants.yaml    # This variant's configuration
+```
+
+See `intermediate_backend.rs:373` for the debug file generation code.
+
+## Best Practices
+
+<Note>
+**Auto-inject build tools**: Automatically add required build tools (compilers, build systems) so users don't have to manually specify them in every project.
+</Note>
+
+<Tip>
+**Respect user configuration**: Check if dependencies are already specified in the project model before adding them automatically.
+</Tip>
+
+<Warning>
+**Platform-aware dependencies**: Always use `model.dependencies(Some(platform))` instead of directly accessing the project model fields to properly handle target selectors.
+</Warning>
+
+<Info>
+**Compiler infrastructure**: Use `pixi_build_backend::compilers` utilities to add compilers and standard libraries - this ensures proper ABI compatibility.
+</Info>
+
+## Examples
+
+For complete working examples, see:
+
+- **Simple backend**: `pixi-build-cmake` - Minimal implementation with compiler support
+- **Complex backend**: `pixi-build-python` - Full metadata extraction, PyPI mapping, multiple installers
+- **Specialized backend**: `pixi-build-rust` - Cargo integration with caching support
+
+## Next Steps
+
+- Learn about [debugging build backends](/guides/debugging)
+- Explore [common troubleshooting scenarios](/guides/troubleshooting)
+- Read about [compiler integration](/concepts/compilers)
